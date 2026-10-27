@@ -334,6 +334,15 @@ check("无临时/编辑器残留文件入库", () => {
   return "ok";
 });
 
+check("workflow 不对 d1 create 使用 --json", () => {
+  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
+  // wrangler d1 create 不支持 --json
+  if (/d1 create[^\n]*--json/.test(workflow)) {
+    throw new Error("d1 create 不支持 --json，会报 Unknown argument");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

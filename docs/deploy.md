@@ -208,6 +208,17 @@ deploy.yml
 **关键点：`database_id` 不写进仓库。** workflow 每次运行时动态查询，
 用 `sed` 注入到临时生成的 `wrangler.toml` 里。仓库里永远是占位符。
 
+> ⚠️ **两个 D1 命令的参数不一样**，这点容易踩坑：
+>
+> | 命令 | `--json` | 说明 |
+> |---|---|---|
+> | `wrangler d1 list` | ✅ 支持 | 输出 JSON 数组，每项含 `uuid` / `name` |
+> | `wrangler d1 create` | ❌ **不支持** | 只输出人类可读文本 |
+>
+> 所以 workflow 里查库用 `--json` 解析，建库只能从文本里抓
+> `database_id = "..."`，抓不到再兜底抓 UUID，最后再查一次列表。
+> 三重兜底是因为 `create` 的输出不是结构化契约，可能随版本变化。
+
 ---
 
 ### 步骤 1：把仓库推到 GitHub

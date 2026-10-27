@@ -163,6 +163,7 @@ jobs:
           set -euo pipefail
           cd packages/core
 
+          # d1 list 支持 --json，d1 create 不支持，所以两者用不同解析方式
           echo "查询现有数据库..."
           DB_ID=$(pnpm exec wrangler d1 list --json 2>/dev/null | node -e "
             let s='';
@@ -170,26 +171,51 @@ jobs:
               try {
                 const list = JSON.parse(s || '[]');
                 const hit = list.find(d => d.name === 'sso-db');
-                process.stdout.write(hit ? hit.uuid : '');
+                process.stdout.write(hit ? (hit.uuid || hit.id || '') : '');
               } catch { process.stdout.write(''); }
             });
           ")
 
           if [ -z "$DB_ID" ]; then
             echo "未找到 sso-db，创建中..."
-            pnpm exec wrangler d1 create sso-db --json > /tmp/create.json 2>&1 || true
-            cat /tmp/create.json || true
-            DB_ID=$(node -e "
-              const fs = require('node:fs');
-              try {
-                const j = JSON.parse(fs.readFileSync('/tmp/create.json','utf8'));
-                process.stdout.write(j.uuid || '');
-              } catch { process.stdout.write(''); }
-            ")
+            # d1 create 只输出人类可读文本，形如：
+            #   ✅ Successfully created DB 'sso-db'
+            #   [[d1_databases]]
+            #   binding = "DB"
+            #   database_name = "sso-db"
+            #   database_id = "xxxxxxxx-xxxx-..."
+            pnpm exec wrangler d1 create sso-db 2>&1 | tee /tmp/d1-create.log || true
+
+            # 优先从输出里抓 database_id
+            DB_ID=$(grep -oE 'database_id\s*=\s*"[^"]+"' /tmp/d1-create.log | head -1 | sed -E 's/.*"([^"]+)"/\1/' || true)
+
+            # 兜底：抓任意 UUID
+            if [ -z "$DB_ID" ]; then
+              DB_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' /tmp/d1-create.log | head -1 || true)
+            fi
+
+            # 最后兜底：重新查询一次（create 可能已成功但输出被截断）
+            if [ -z "$DB_ID" ]; then
+              echo "从输出解析失败，重新查询..."
+              DB_ID=$(pnpm exec wrangler d1 list --json 2>/dev/null | node -e "
+                let s='';
+                process.stdin.on('data',d=>s+=d).on('end',()=>{
+                  try {
+                    const list = JSON.parse(s || '[]');
+                    const hit = list.find(d => d.name === 'sso-db');
+                    process.stdout.write(hit ? (hit.uuid || hit.id || '') : '');
+                  } catch { process.stdout.write(''); }
+                });
+              ")
+            fi
           fi
 
           if [ -z "$DB_ID" ]; then
             echo "::error::无法解析或创建 D1 数据库 sso-db"
+            echo "--- d1 create 输出 ---"
+            cat /tmp/d1-create.log 2>/dev/null || true
+            echo "--- d1 list 输出 ---"
+            pnpm exec wrangler d1 list 2>&1 || true
             exit 1
           fi
 

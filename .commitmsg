@@ -1,0 +1,11 @@
+修复 D1 建库解析：create 不支持 --json
+
+wrangler d1 list 支持 --json，但 d1 create 不支持，
+传了会报 Unknown argument: json，导致 resolve-d1 job 失败。
+
+改为：
+- 查库仍用 d1 list --json
+- 建库从文本输出抓 database_id，抓不到兜底抓 UUID，
+  最后再查一次列表（create 可能已成功但输出不完整）
+
+文档补充两个命令的参数差异，并加门禁防止再犯。
