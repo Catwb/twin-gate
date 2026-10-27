@@ -299,6 +299,22 @@ jobs:
           cd packages/core
           pnpm exec wrangler d1 migrations apply sso-db --remote
 
+      - name: 创建初始超管（幂等）
+        if: inputs.run_migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SESSION_PEPPER: ${{ secrets.SESSION_PEPPER }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          # 已经存在 super_admin 时自动跳过，可安全重复执行。
+          # 只在 run_migrations 时跑：首次部署建库后立刻种子，
+          # 后续常规部署不再尝试。
+          node scripts/seed-admin-ci.mjs
+
       - name: 注入 Worker secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

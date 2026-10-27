@@ -352,6 +352,13 @@ SIGNING_KEYS_JSON=[{"kid":"k20261027",...}]
 | `SESSION_PEPPER` | 步骤 3 生成 |
 | `TOTP_MASTER_KEY` | 步骤 3 生成 |
 | `SIGNING_KEYS_JSON` | 步骤 3 生成（整行 JSON） |
+| `SEED_ADMIN_EMAIL` | **第一个超管的邮箱** |
+| `SEED_ADMIN_PASSWORD` | **第一个超管的密码**，至少 12 位 |
+
+> `SEED_ADMIN_*` 只用于初始化。workflow 在 `run_migrations: true` 时会调用
+> `scripts/seed-admin-ci.mjs` **幂等地**创建超管：库里已有任何 `super_admin` 就跳过。
+>
+> 首次部署成功后，建议把这两个 secret 删掉 —— 它们不需要长期存在。
 
 #### Variables（建议配置）
 
@@ -414,40 +421,52 @@ GitHub → **Actions** → 左侧选 **deploy** → **Run workflow**：
 
 ---
 
-### 步骤 7：种子第一个超管
+### 步骤 7：超管由 workflow 自动创建
 
-这一步**仍是本地操作**——因为它要直接写库，不适合放进 CI。
+**不需要本地操作。** `deploy.yml` 里有一个幂等步骤：
 
-先拿到 `database_id`（workflow 的 `resolve-d1` job 日志里有，或本地跑）：
-
-```bash
-pnpm install
-pnpm --filter @sso/core exec wrangler d1 list --json
-# 找到 name 为 sso-db 的那条，复制 uuid
+```yaml
+- name: 创建初始超管（幂等）
+  if: inputs.run_migrations
+  env:
+    SESSION_PEPPER: ${{ secrets.SESSION_PEPPER }}
+    SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+    SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+  run: node scripts/seed-admin-ci.mjs
 ```
 
-生成种子 SQL：
+它的行为：
 
-```bash
-# Linux / macOS
-SESSION_PEPPER='<步骤 3 的 pepper>' node scripts/seed-superadmin.mjs \
-  --email you@example.com --password '<临时密码>' > seed.sql
+| 库中状态 | 结果 |
+|---|---|
+| 没有 `super_admin` | **创建**，输出 `created=true` |
+| 已有 `super_admin` | **跳过**，输出 `created=false` |
+| 邮箱被普通用户占用 | **报错退出**，提示换邮箱 |
+| 密码不足 12 位 | **报错退出** |
 
-# Windows PowerShell
-$env:SESSION_PEPPER='<步骤 3 的 pepper>'
-node scripts/seed-superadmin.mjs --email you@example.com --password '<临时密码>' > seed.sql
+**幂等意味着可以安全重复运行** —— 后续部署即使再次勾选 `run_migrations` 也不会重复建号，
+也不会覆盖你后来改过的密码。
+
+首次部署时填的账号密码：
+
+```
+邮箱：SEED_ADMIN_EMAIL 的值
+密码：SEED_ADMIN_PASSWORD 的值
 ```
 
-检查后执行（需要先登录 wrangler）：
+> 首次登录会被强制跳到 `/admin/security` 绑定 MFA，这是超管门禁在工作。
 
-```bash
-pnpm exec wrangler login
-pnpm --filter @sso/core exec wrangler d1 execute sso-db --remote --file=./seed.sql
-rm seed.sql
-```
+#### 如果种子步骤失败
 
-> 这是**唯一**一个绕过 Core 直接写库的步骤，属于运维例外。
-> 密码至少 12 位；`password_hash` 必须用你注入的那个 pepper 计算。
+看 job 日志里 `[seed]` 开头的行，它会打印具体原因。常见的：
+
+| 日志 | 原因 |
+|---|---|
+| `缺少 SESSION_PEPPER` | 这个 secret 没配 |
+| `SEED_ADMIN_PASSWORD 至少 12 位` | 密码太短 |
+| `邮箱 xxx 已被占用（但不是超管）` | 该邮箱有普通用户账号 |
+
+修复后重新触发 workflow 即可，**不需要先清库**。
 
 ---
 

@@ -376,6 +376,31 @@ check("workflow 自校验不依赖凭证", () => {
   return "ok";
 });
 
+check("超管种子脚本幂等且校验输入", () => {
+  const path = join(ROOT, "scripts/seed-admin-ci.mjs");
+  const script = read(path);
+
+  // 必须有幂等判断：先查已有超管
+  if (!script.includes("role = 'super_admin'")) {
+    throw new Error("种子脚本缺少「是否已有超管」的查询");
+  }
+  if (!script.includes("created=false")) {
+    throw new Error("种子脚本缺少跳过时的输出");
+  }
+
+  // 必须有输入校验
+  if (!script.includes("至少 12 位")) {
+    throw new Error("种子脚本未校验密码长度");
+  }
+
+  // workflow 里必须真的调用它
+  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
+  if (!workflow.includes("seed-admin-ci.mjs")) {
+    throw new Error("deploy.yml 未调用种子脚本");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {
