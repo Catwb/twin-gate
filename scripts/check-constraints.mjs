@@ -5,6 +5,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
+import { execSync } from "node:child_process";
 import { registerMfaChecks } from "./checks/mfa.mjs";
 import { registerOidcChecks } from "./checks/oidc.mjs";
 
@@ -320,6 +321,16 @@ check("部署文档的 token 权限说明含 D1", () => {
   if (!deploy.includes("D1 : Edit")) {
     throw new Error("文档未列出 D1 : Edit 权限");
   }
+  return "ok";
+});
+
+check("无临时/编辑器残留文件入库", () => {
+  const tracked = execSync("git ls-files", { cwd: ROOT, encoding: "utf8" });
+  const forbidden = [".gitmsg.txt", ".git-msg.txt", ".tmp-", "*.bak", ".DS_Store"];
+  const offenders = tracked
+    .split("\n")
+    .filter((f) => forbidden.some((pattern) => (pattern.includes("*") ? f.includes(pattern.replace("*", "")) : f === pattern)));
+  if (offenders.length) throw new Error(`发现临时文件: ${offenders.join(", ")}`);
   return "ok";
 });
 
