@@ -12,3 +12,5 @@ backup-*.sql
 seed.sql
 .DS_Store
 *.log.gitmsg.txt
+.commitmsg
+*.commitmsg
