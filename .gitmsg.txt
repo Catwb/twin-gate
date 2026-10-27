@@ -1,0 +1,9 @@
+修复 actionlint 探测逻辑：找不到时不应误报失败
+
+之前的 find() 里把字符串 actionlint 当作无条件候选，
+导致本机装了 actionlint 时选中它，
+但 CI 上没装时 execFileSync 抛 ENOENT，被当成校验不通过。
+
+改为先用 --version 探测能否真正执行，探测失败则降级为内置检查并提示。
+CI 里改用 raven-actions/actionlint@v2 实际安装，
+这样 actionlint 校验在 CI 中真正生效而不是静默跳过。

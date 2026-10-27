@@ -66,15 +66,31 @@ for (const file of files) {
 }
 
 // ---- actionlint（若可用）----
-const actionlintCandidates = [
+// 关键：必须真正能执行才算「可用」。
+// 之前把字符串 "actionlint" 当作无条件候选，导致 CI 上 path 查找失败（ENOENT）
+// 被误判成「校验不通过」。这里先用 --version 探测。
+const candidates = [
   process.env.ACTIONLINT_PATH,
   join(process.env.TEMP ?? "", "actionlint", "actionlint.exe"),
   join(process.env.TEMP ?? "", "actionlint", "actionlint"),
+  "/usr/local/bin/actionlint",
+  "/usr/bin/actionlint",
   "actionlint",
 ].filter(Boolean);
 
-const actionlint = actionlintCandidates.find((p) => p === "actionlint" || existsSync(p));
+function probe(candidate) {
+  try {
+    execFileSync(candidate, ["--version"], { stdio: "pipe" });
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+const actionlint = candidates.map(probe).find(Boolean) ?? null;
+
 if (actionlint) {
+  console.log(`使用 actionlint: ${actionlint}`);
   for (const file of files) {
     try {
       execFileSync(actionlint, [join(DIR, file)], { stdio: "pipe" });
@@ -90,7 +106,8 @@ if (actionlint) {
   }
 } else {
   console.warn("提示: 未找到 actionlint，仅执行内置检查");
-  console.warn("      安装后可获得更严格的校验: https://github.com/rhysd/actionlint");
+  console.warn("      CI 中可通过以下步骤安装：");
+  console.warn("        uses: raven-actions/actionlint@v2");
 }
 
 if (failed > 0) {
