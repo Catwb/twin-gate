@@ -230,16 +230,75 @@ git ls-files | grep -E "dev[.]vars$|seed[.]sql|backup-"
 
 ### 步骤 2：创建 Cloudflare API Token
 
-Dashboard → 右上头像 → **My Profile** → **API Tokens** → **Create Token**：
+Dashboard → 右上头像 → **My Profile** → **API Tokens** → **Create Token**。
 
-1. 选 **Edit Cloudflare Workers** 模板
-2. Account Resources：**只选你要部署的那个账号**
-3. Zone Resources：可以留空（本项目不用 Zone 级权限）
-4. 创建后**立刻复制** token（只显示一次）
+⚠️ **不要用 "Edit Cloudflare Workers" 模板** —— 它**不含 D1 权限**。
+
+官方模板清单（[API token templates](https://developers.cloudflare.com/fundamentals/api/reference/template/)）里，
+"Edit Cloudflare Workers" 只给了这几项：
+
+```
+Workers Routes Write     Zone
+Workers Scripts Write    Account
+Workers KV Storage Write Account
+Workers Tail Read        Account
+Workers R2 Storage Write Account
+Account Settings Read    Account
+User Details Read        User
+User Memberships Read    User
+```
+
+**没有 D1。** 用它跑 workflow，`resolve-d1` 这一步会直接失败——而且报错是权限不足，
+不一定能和"token 配错了"直接对上号。
+
+#### 正确做法：自定义权限
+
+选 **Create Custom Token**，手动勾选以下权限（Account 级）：
+
+| 权限 | 用途 | 必需 |
+|---|---|---|
+| **Workers Scripts : Edit** | 部署两个 Worker | ✅ |
+| **D1 : Edit** | 建库、列表查询、跑迁移 | ✅ |
+| **Workers KV Storage : Edit** | 本项目**不用** | ❌ 不需要 |
+| **Workers R2 Storage : Edit** | 本项目**不用** | ❌ 不需要 |
+| **Account Settings : Read** | 一般不需要 | ❌ 可选 |
+
+**最小权限集就两条**：
+
+```
+Account → Workers Scripts : Edit
+Account → D1 : Edit
+```
+
+Account Resources 选 **Include → 你的账号**。
+Zone Resources 选 **Include → 全部区域**或留空（本项目不绑定 Zone 级路由，
+自定义域名走 Custom Domain，不需要 Zone 权限）。
+
+#### 逐项对照：workflow 每步需要什么权限
+
+| workflow 步骤 | 实际调用 | 需要的权限 |
+|---|---|---|
+| `resolve-d1` 查询 | `wrangler d1 list --json` | **D1 : Edit**（或 Read） |
+| `resolve-d1` 创建 | `wrangler d1 create` | **D1 : Edit** |
+| `deploy-core` 迁移 | `wrangler d1 migrations apply` | **D1 : Edit** |
+| `deploy-core` 注入 secret | `wrangler secret bulk` | **Workers Scripts : Edit** |
+| `deploy-core` 部署 | `wrangler deploy` | **Workers Scripts : Edit** |
+| `deploy-gateway` 全部 | 同上 | 同上 |
+| `smoke` 冒烟测试 | 公开 HTTP 请求 | **无需权限** |
+
+> 如果你只想让 token 能部署、不想让它能建库，可以只给 `D1 : Read`，
+> 然后自己手动建一次库。但这样 `run_migrations` 就跑不了。
+
+#### 创建后
+
+**立刻复制 token**（只显示一次）。
 
 再记下 **Account ID**：Dashboard → Workers & Pages → 右侧栏底部。
 
-> ⚠️ 不要用 Global API Key。它权限过大，泄露等于整个账号失守。
+> ⚠️ 不要用 Global API Key。它权限过大，且不受 IP/资源范围限制，泄露等于整个账号失守。
+
+> ⚠️ 不要把 token 写进仓库、wrangler.toml 或任何提交的文件。
+> 它只该出现在 GitHub Secrets 里。
 
 ---
 

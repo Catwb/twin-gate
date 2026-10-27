@@ -311,6 +311,18 @@ check("verify workflow 只做门禁不部署", () => {
   return "ok";
 });
 
+check("部署文档的 token 权限说明含 D1", () => {
+  const deploy = read(join(ROOT, "docs/deploy.md"));
+  // "Edit Cloudflare Workers" 模板不含 D1，文档必须明确警告
+  if (!deploy.includes("不含 D1") && !deploy.includes("不要用 \"Edit Cloudflare Workers\" 模板")) {
+    throw new Error("文档未提醒 Edit Cloudflare Workers 模板缺少 D1 权限");
+  }
+  if (!deploy.includes("D1 : Edit")) {
+    throw new Error("文档未列出 D1 : Edit 权限");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {
