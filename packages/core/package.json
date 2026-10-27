@@ -1,0 +1,29 @@
+{
+  "name": "@sso/core",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.34.4",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply sso-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply sso-db --remote"
+  },
+  "dependencies": {
+    "@sso/shared": "workspace:*",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.14",
+    "otpauth": "9.5.2",
+    "@simplewebauthn/server": "14.0.3",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261026.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4",
+    "wrangler": "4.152.0"
+  }
+}

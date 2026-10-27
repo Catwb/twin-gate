@@ -1,0 +1,117 @@
+# 安全策略
+
+## 报告漏洞
+
+**不要开公开 issue。**
+
+- 通过 GitHub Security Advisories 私下报告：仓库页 → Security → Report a vulnerability
+- 或直接联系维护者（见仓库主页）
+
+报告时请包含：受影响的版本、复现步骤、影响评估。我会在 72 小时内回应。
+
+---
+
+## 威胁模型
+
+这个项目是**公开源码**的。请先理解这点对安全的影响。
+
+### 设计前提：不依赖保密
+
+系统的安全性**不建立在"攻击者不知道实现"之上**。以下这些都是公开信息，知道了也没用：
+
+- 所有端点路径与参数
+- 密码哈希算法（HMAC-SHA256 + pepper）
+- 会话时长、限流阈值、锁定策略
+- 默认配置与部署拓扑
+
+这在密码学里叫 Kerckhoffs 原则。**如果一个系统只因为代码不公开才安全，那它本来就不安全。**
+
+### 我们能防住的
+
+| 威胁 | 防护 |
+|---|---|
+| 撞库 / 密码爆破 | WAF 速率限制 + D1 账号锁定（10 次/15 分钟）+ IP 锁定（20 次/小时） |
+| 用户名枚举 | 用户不存在时也走完整哈希比对，响应码/文案/耗时一致 |
+| 会话劫持 | `__Host-` Cookie、HTTPS-only、HttpOnly、会话令牌只存 SHA-256 |
+| 会话固定 | MFA 升级与改密时轮换 token（同 sessionId，新 token_hash） |
+| CSRF | 写操作强制自定义头；`/oauth/*` 豁免（服务端到服务端，另有 client_secret + PKCE） |
+| 开放重定向 | `redirect_uri` 精确匹配注册值，不匹配时**不重定向**而是报错 |
+| 授权码拦截 | PKCE S256 强制 + 授权码 60 秒单次使用 |
+| 令牌无法吊销 | 访问令牌是不透明串，`/oauth/introspect` 查实时状态 |
+| 凭证克隆 | Passkey `counter` 更新，倒退视为泄露 |
+| TOTP 重放 | `last_used_step` 严格递增，同一步长只接受一次 |
+| 越权访问数据库 | Gateway 无 D1 binding；Core 无公网路由 |
+| 身份伪造 | 身份只走 Service Binding 的 JSON body，客户端头部在结构上没有落点 |
+| MFA 绕过 | `requireAuth` 显式拒绝 `mfa_pending`；超管未绑定 MFA 时锁死在绑定页 |
+| 供应链投毒 | 依赖精确锁版本，`preinstall` 强制 pnpm，CI 跑 `pnpm verify` |
+
+### 我们明确不防的
+
+公开说明这些，是为了让使用者做出知情决策：
+
+| 不防的东西 | 原因 |
+|---|---|
+| **Cloudflare 账号被接管** | 超出应用层能力。账号没了，D1、secret、Worker 全部失守 |
+| **`SESSION_PEPPER` 泄露后的离线爆破** | 密码用 HMAC+pepper 而非 PBKDF2（免费版 10ms CPU 限制）。pepper 是唯一防线 |
+| **ID Token 签发后被滥用** | 签名 JWT 签发即不可收回，只能等过期。下游不得把它当长期凭证 |
+| **下游不走内省** | 我们的吊销传不到不查询的下游。这是集成方责任 |
+| **物理层 / 侧信道** | 不在范围内 |
+| **DDoS** | 靠 Cloudflare 平台自身，本项目只做应用层限流 |
+| **社会工程学** | 不在范围内 |
+
+### 已知的取舍
+
+这些不是漏洞，是**有意识的设计选择**，写在这里避免被当成 bug 报告：
+
+1. **密码哈希用 HMAC 而非 PBKDF2**
+   Workers 免费版每次请求只有 10ms CPU，且 workerd 对 PBKDF2 有 10 万次迭代的硬上限。
+   代价：pepper 成为唯一防线。缓解：强制 MFA、限流、pepper 离线备份且与 D1 备份分开存放。
+
+2. **不签发 refresh token**
+   访问令牌 1 小时过期后靠 SSO 会话 Cookie 静默重授权。引入 refresh token 意味着要处理轮换与重放检测，复杂度远超收益。
+
+3. **不发邮件**
+   邀请码与密码重置令牌在后台一次性明文显示，线下转达。适合 ≤10 人的自用/小团队场景。
+
+4. **单租户**
+   没有 `tenant_id`。多租户是另一个量级的改动。
+
+5. **ID Token 不可吊销**
+   OIDC 协议本身的限制。`sid` 声明已写入，为将来补 Back-channel Logout 留了钩子。
+
+---
+
+## 部署者须知
+
+如果你是**基于本仓库部署自己的实例**，以下几条必须做到，否则安全模型不成立：
+
+1. **`SESSION_PEPPER` / `TOTP_MASTER_KEY` / `SIGNING_KEYS_JSON` 必须离线备份**，
+   且 pepper 的备份与 D1 备份**不在同一处**
+2. **四个 secret 缺一个都不许上线**（`wrangler.toml` 的 `[secrets] required` 会强制）
+3. **Core 必须验证不可达**：`curl https://sso-core.<sub>.workers.dev` 不应返回 200
+4. **首次登录必须绑定 MFA**，否则超管门禁会把你锁在绑定页
+5. **建第二个超管**，否则唯一超管失联 = 全租户锁死
+6. **配置 WAF 速率限制**覆盖 `/auth/login`（应用层锁定是第二道，不是第一道）
+
+详见 `docs/deploy.md`。
+
+---
+
+## 硬约束门禁
+
+仓库自带 `scripts/check-constraints.mjs`，覆盖 43 条不可退让的约束：
+
+```bash
+pnpm check       # 只跑门禁
+pnpm verify      # 类型检查 + 单测 + 门禁
+```
+
+任何一条不通过都以非零码退出。CI 里跑这条即可。
+
+门禁检查的是"架构假设是否还成立"，不是"代码风格"。例如：
+
+- Gateway 的绑定里是否混进了 `d1_databases`
+- 是否存在 SQL 透传接口（会让双 Worker 隔离归零）
+- 密码字段是否还是 `password_hash`
+- MFA 升级是否还在轮换 token 而非新建会话
+- 私钥是否还在 D1 里

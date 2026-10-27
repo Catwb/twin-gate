@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+# 锁文件不要被重写，否则 --frozen-lockfile 会在 CI 里炸
+pnpm-lock.yaml -text
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

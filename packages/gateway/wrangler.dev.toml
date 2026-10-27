@@ -1,0 +1,22 @@
+name = "sso-gateway-dev"
+main = "src/worker.ts"
+compatibility_date = "2026-10-26"
+
+[[services]]
+binding = "CORE"
+service = "sso-core"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+# 仅开发环境：让静态页也走 Worker，以便热重载调试。
+run_worker_first = true
+
+[secrets]
+required = ["GATEWAY_TOKEN"]
+
+[vars]
+ISSUER = "http://localhost:8787"
+RP_ID = "localhost"
+INVITE_ENABLED = "true"

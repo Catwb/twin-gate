@@ -1,0 +1,49 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: typecheck + test + constraints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Unit tests
+        run: pnpm -r test
+
+      - name: Hard constraint gate
+        run: pnpm check
+
+      - name: Build gateway
+        run: pnpm --filter @sso/gateway build
+
+      - name: Dry-run deploy (Core)
+        run: pnpm --filter @sso/core exec wrangler deploy --dry-run --outdir=.dryrun
+        env:
+          CLOUDFLARE_API_TOKEN: dummy
+
+      - name: Dry-run deploy (Gateway)
+        run: pnpm --filter @sso/gateway exec wrangler deploy --dry-run --outdir=.dryrun
+        env:
+          CLOUDFLARE_API_TOKEN: dummy

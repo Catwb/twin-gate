@@ -1,0 +1,30 @@
+name = "sso-core"
+main = "src/index.ts"
+compatibility_date = "2026-10-26"
+
+# Core 绝不允许公网可达。这三行是安全边界的核心，删掉任何一行都等于开洞。
+workers_dev = false
+
+# 绑定额度：D1 x1 + Cron。不得出现 kv_namespaces / r2_buckets / services。
+[[d1_databases]]
+binding = "DB"
+database_name = "sso-db"
+# database_id 在首次 `pnpm wrangler d1 create sso-db` 后填入。
+# 它不是凭证（无账号授权拿到也无用），因此允许存在于配置中。
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true
+
+[vars]
+# 非敏感。issuer 一经对外发布不可更改。
+ISSUER = "http://localhost:8787"
+RP_ID = "localhost"
+
+# 缺任何一个 secret，部署直接失败，避免"部署成功但线上 500"。
+[secrets]
+required = ["GATEWAY_TOKEN", "SESSION_PEPPER", "SIGNING_KEYS_JSON", "TOTP_MASTER_KEY"]

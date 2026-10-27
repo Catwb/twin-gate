@@ -1,0 +1,74 @@
+.app-root {
+  min-height: 100vh;
+}
+
+.logout-form {
+  margin-top: var(--space-4);
+}
+
+.logout-form .btn {
+  width: 100%;
+}
+
+.admin-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+}
+
+.admin-nav {
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4) var(--space-3);
+  background: var(--color-surface);
+}
+
+.admin-nav a {
+  display: block;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.admin-nav a:hover {
+  background: var(--color-bg);
+  text-decoration: none;
+}
+
+.admin-nav a[aria-current="page"] {
+  background: var(--color-bg);
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.admin-main {
+  padding: var(--space-5);
+  overflow-x: auto;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.admin-title {
+  font-size: 20px;
+}
+
+.pager {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 720px) {
+  .admin-shell {
+    grid-template-columns: 1fr;
+  }
+  .admin-nav {
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+}

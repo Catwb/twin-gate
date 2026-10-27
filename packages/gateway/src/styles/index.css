@@ -1,0 +1,5 @@
+/* 唯一入口。所有产物汇成一个 app.css，静态页与 SSR 页共用。 */
+@import "./tokens.css";
+@import "./base.css";
+@import "./components.css";
+@import "./layout.css";

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+# 构建产物：由 pnpm build 生成，不入库
+packages/gateway/public/assets/
+.wrangler/
+.dryrun/
+.dev.vars
+.env
+*.sql
+!packages/core/migrations/*.sql
+backup-*.sql
+seed.sql
+.DS_Store
+*.log

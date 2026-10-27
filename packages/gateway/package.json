@@ -1,0 +1,33 @@
+{
+  "name": "@sso/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.34.4",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.dev.toml",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "build:css": "esbuild src/styles/index.css --bundle --minify --outfile=public/assets/app.css",
+    "build:js": "esbuild src/pages/client.ts src/pages/security-client.ts --bundle --format=esm --minify --outdir=public/assets",
+    "build:ssg": "tsx build.tsx",
+    "build": "pnpm build:css && pnpm build:js && pnpm build:js:rename && pnpm build:ssg",
+    "build:js:rename": "node -e \"const fs=require('node:fs');fs.renameSync('public/assets/client.js','public/assets/app.js');fs.renameSync('public/assets/security-client.js','public/assets/security.js')\""
+  },
+  "dependencies": {
+    "@sso/shared": "workspace:*",
+    "hono": "4.13.14",
+    "@simplewebauthn/browser": "14.0.0",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261026.1",
+    "esbuild": "0.25.10",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4",
+    "wrangler": "4.152.0",
+    "@types/node": "24.10.1"
+  }
+}

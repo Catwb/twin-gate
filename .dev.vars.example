@@ -1,0 +1,18 @@
+# 本地开发用的 secret 模板。
+# 复制成 .dev.vars 后填入真实值（.dev.vars 已被 .gitignore 忽略，不会入库）。
+#
+#   cp .dev.vars.example .dev.vars
+#
+# 生成随机值：node scripts/gen-secrets.mjs
+# 生产环境用 wrangler secret put 或 Dashboard 注入，绝不写在这里。
+
+# ---- packages/core ----
+GATEWAY_TOKEN=dev-token-change-me-0000000000000000000000
+SESSION_PEPPER=dev-pepper-change-me-00000000000000000000
+TOTP_MASTER_KEY=dev-totp-key-change-me-000000000000000000
+SIGNING_KEYS_JSON=[{"kid":"dev-k1","alg":"EdDSA","public_jwk":{},"private_jwk":{}}]
+RP_ID=localhost
+
+# ---- packages/gateway ----
+# GATEWAY_TOKEN 必须与 core 完全一致
+GATEWAY_TOKEN=dev-token-change-me-0000000000000000000000

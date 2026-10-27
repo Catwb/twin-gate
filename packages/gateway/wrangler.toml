@@ -1,0 +1,28 @@
+name = "sso-gateway"
+main = "src/worker.ts"
+compatibility_date = "2026-10-26"
+
+# Gateway 绑定面只有两项：Service Binding + Assets。
+# 出现任何 d1_databases / kv_namespaces / r2_buckets 都是事故。
+[[services]]
+binding = "CORE"
+service = "sso-core"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+# 生产环境绝不配置 run_worker_first：
+# 免费版一旦触发该路径并超额，会直接 429 而不回退静态资源。
+
+[observability]
+enabled = true
+
+[secrets]
+required = ["GATEWAY_TOKEN"]
+
+[vars]
+# 非敏感配置，明文可接受。issuer 一经对外发布不可更改。
+ISSUER = "http://localhost:8787"
+RP_ID = "localhost"
+INVITE_ENABLED = "false"
