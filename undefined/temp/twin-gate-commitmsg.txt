@@ -1,0 +1,13 @@
+修复 TOML 注入：改用 node 而非 sed
+
+sed 在 workflow 的多层 shell 引号里丢失了引号，导致生成：
+  ISSUER = https://sso.furryawa.com   (无引号，TOML 非法)
+正确形式必须是：
+  ISSUER = "https://sso.furryawa.com"
+
+wrangler 报 Invalid TOML document: invalid value 后整个部署失败。
+
+改为用 node 读改写，值用 JSON.stringify 序列化，从根上保证引号正确。
+注入后立刻用 wrangler 自校验 TOML 合法性，失败时打印生成后的配置。
+
+门禁新增：workflow 不得用 sed 改 wrangler.toml。

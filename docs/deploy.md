@@ -206,7 +206,12 @@ deploy.yml
 ```
 
 **关键点：`database_id` 不写进仓库。** workflow 每次运行时动态查询，
-用 `sed` 注入到临时生成的 `wrangler.toml` 里。仓库里永远是占位符。
+用脚本注入到临时生成的 `wrangler.toml` 里。仓库里永远是占位符。
+
+> 注入用的是 Node 而不是 `sed`。原因：`ISSUER` 是 URL，TOML 里必须写成
+> `ISSUER = "https://..."` —— 带引号。`sed` 在多层 shell 引号里很容易把引号吃掉，
+> 结果是 `ISSUER = https://...`，wrangler 报 `Invalid TOML document: invalid value`。
+> 用 `JSON.stringify(value)` 生成带引号的字符串，从根上避免这个问题。
 
 > ⚠️ **两个 D1 命令的参数不一样**，这点容易踩坑：
 >

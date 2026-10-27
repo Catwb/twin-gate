@@ -343,6 +343,19 @@ check("workflow 不对 d1 create 使用 --json", () => {
   return "ok";
 });
 
+check("workflow 不用 sed 修改 TOML", () => {
+  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
+  // sed 改 TOML 需要嵌套引号，极易丢失引号导致 "invalid value"
+  if (/sed -i[^\n]*wrangler\.toml/.test(workflow)) {
+    throw new Error("不要用 sed 改 wrangler.toml，改用 node 重写（引号会丢）");
+  }
+  // 注入逻辑必须用 JSON.stringify 保证引号正确
+  if (!workflow.includes("JSON.stringify(issuer)")) {
+    throw new Error("ISSUER 注入应使用 JSON.stringify 保证带引号");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

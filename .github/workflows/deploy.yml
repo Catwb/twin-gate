@@ -246,15 +246,40 @@ jobs:
         run: |
           set -euo pipefail
           cd packages/core
-          sed -i "s|REPLACE_WITH_D1_DATABASE_ID|$DB_ID|" wrangler.toml
-          if [ -n "${ISSUER:-}" ]; then
-            sed -i "s|^ISSUER = .*|ISSUER = "$ISSUER"|" wrangler.toml
-          fi
-          if [ -n "${RP_ID:-}" ]; then
-            sed -i "s|^RP_ID = .*|RP_ID = "$RP_ID"|" wrangler.toml
-          fi
+
+          # 用 node 改 TOML，避免 sed 的多层引号转义问题：
+          # ISSUER 是 URL，值必须被双引号包起来，否则 TOML 解析失败。
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'wrangler.toml';
+          let text = fs.readFileSync(path, 'utf8');
+
+          const dbId = process.env.DB_ID;
+          if (!dbId) { console.error('缺少 DB_ID'); process.exit(1); }
+          text = text.replace(/REPLACE_WITH_D1_DATABASE_ID/g, dbId);
+
+          const issuer = process.env.ISSUER;
+          if (issuer) {
+            text = text.replace(/^ISSUER = .*$/m, 'ISSUER = ' + JSON.stringify(issuer));
+          }
+
+          const rpId = process.env.RP_ID;
+          if (rpId) {
+            text = text.replace(/^RP_ID = .*$/m, 'RP_ID = ' + JSON.stringify(rpId));
+          }
+
+          fs.writeFileSync(path, text);
+          NODE
+
           echo "--- 生效配置 ---"
           grep -E '^(ISSUER|RP_ID|database_id)' wrangler.toml || true
+
+          # 立刻用 wrangler 自己校验 TOML 是否合法，避免带着坏配置往下走
+          pnpm exec wrangler d1 list --json > /dev/null || {
+            echo "::error::wrangler.toml 无效，请检查注入后的配置"
+            grep -E '^(ISSUER|RP_ID|database_id)' wrangler.toml
+            exit 1
+          }
 
       - name: D1 迁移
         if: inputs.run_migrations
@@ -327,12 +352,25 @@ jobs:
         run: |
           set -euo pipefail
           cd packages/gateway
-          if [ -n "${ISSUER:-}" ]; then
-            sed -i "s|^ISSUER = .*|ISSUER = "$ISSUER"|" wrangler.toml
-          fi
-          if [ -n "${RP_ID:-}" ]; then
-            sed -i "s|^RP_ID = .*|RP_ID = "$RP_ID"|" wrangler.toml
-          fi
+
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'wrangler.toml';
+          let text = fs.readFileSync(path, 'utf8');
+
+          const issuer = process.env.ISSUER;
+          if (issuer) {
+            text = text.replace(/^ISSUER = .*$/m, 'ISSUER = ' + JSON.stringify(issuer));
+          }
+
+          const rpId = process.env.RP_ID;
+          if (rpId) {
+            text = text.replace(/^RP_ID = .*$/m, 'RP_ID = ' + JSON.stringify(rpId));
+          }
+
+          fs.writeFileSync(path, text);
+          NODE
+
           grep -E '^(ISSUER|RP_ID)' wrangler.toml || true
 
       - name: 注入 Worker secrets
