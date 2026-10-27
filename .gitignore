@@ -11,4 +11,4 @@ packages/gateway/public/assets/
 backup-*.sql
 seed.sql
 .DS_Store
-*.log
+*.log.gitmsg.txt
