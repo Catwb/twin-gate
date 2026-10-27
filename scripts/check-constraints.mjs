@@ -331,6 +331,12 @@ check("无临时/编辑器残留文件入库", () => {
     .split("\n")
     .filter((f) => forbidden.some((pattern) => (pattern.includes("*") ? f.includes(pattern.replace("*", "")) : f === pattern)));
   if (offenders.length) throw new Error(`发现临时文件: ${offenders.join(", ")}`);
+
+  // 防止因环境变量异常（如 os.tmpdir() 返回 undefined）
+  // 把临时文件写进仓库的相对路径
+  const badPaths = tracked.split("\n").filter((f) => f.startsWith("undefined/") || f.includes("/undefined/"));
+  if (badPaths.length) throw new Error(`发现异常路径: ${badPaths.join(", ")}`);
+
   return "ok";
 });
 
