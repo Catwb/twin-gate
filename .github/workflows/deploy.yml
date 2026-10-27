@@ -50,7 +50,7 @@ jobs:
     steps:
       - name: 确认输入
         run: |
-          if [ "${{ inputs.confirm }" != "DEPLOY" ]; then
+          if [ "${{ inputs.confirm }}" != "DEPLOY" ]; then
             echo "::error::请在 confirm 输入框填入 DEPLOY 以确认执行"
             exit 1
           fi
@@ -67,11 +67,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -84,10 +84,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
@@ -108,10 +108,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
@@ -131,8 +131,8 @@ jobs:
 
       - name: 打包验证（不部署）
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           pnpm --filter @sso/core exec wrangler deploy --dry-run --outdir=.dryrun
           pnpm --filter @sso/gateway exec wrangler deploy --dry-run --outdir=.dryrun
@@ -142,23 +142,23 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     outputs:
-      database_id: ${{ steps.resolve.outputs.database_id }
+      database_id: ${{ steps.resolve.outputs.database_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
       - name: 查询或创建 D1 数据库
         id: resolve
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           cd packages/core
@@ -199,24 +199,24 @@ jobs:
   deploy-core:
     name: deploy-core
     needs: prepare
-    if: ${{ inputs.target == 'both' || inputs.target == 'core' }
+    if: inputs.target == 'both' || inputs.target == 'core'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
       - name: 注入运行时配置
         env:
-          DB_ID: ${{ needs.prepare.outputs.database_id }
-          ISSUER: ${{ vars.ISSUER }
-          RP_ID: ${{ vars.RP_ID }
+          DB_ID: ${{ needs.prepare.outputs.database_id }}
+          ISSUER: ${{ vars.ISSUER }}
+          RP_ID: ${{ vars.RP_ID }}
         run: |
           set -euo pipefail
           cd packages/core
@@ -231,22 +231,22 @@ jobs:
           grep -E '^(ISSUER|RP_ID|database_id)' wrangler.toml || true
 
       - name: D1 迁移
-        if: ${{ inputs.run_migrations }
+        if: inputs.run_migrations
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           cd packages/core
           pnpm exec wrangler d1 migrations apply sso-db --remote
 
       - name: 注入 Worker secrets
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
-          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }
-          SESSION_PEPPER: ${{ secrets.SESSION_PEPPER }
-          TOTP_MASTER_KEY: ${{ secrets.TOTP_MASTER_KEY }
-          SIGNING_KEYS_JSON: ${{ secrets.SIGNING_KEYS_JSON }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
+          SESSION_PEPPER: ${{ secrets.SESSION_PEPPER }}
+          TOTP_MASTER_KEY: ${{ secrets.TOTP_MASTER_KEY }}
+          SIGNING_KEYS_JSON: ${{ secrets.SIGNING_KEYS_JSON }}
         run: |
           set -euo pipefail
           cd packages/core
@@ -266,8 +266,8 @@ jobs:
 
       - name: 部署 Core
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           cd packages/core
           pnpm exec wrangler deploy
@@ -284,10 +284,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ env.PNPM_VERSION }
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
@@ -296,8 +296,8 @@ jobs:
 
       - name: 注入运行时配置
         env:
-          ISSUER: ${{ vars.ISSUER }
-          RP_ID: ${{ vars.RP_ID }
+          ISSUER: ${{ vars.ISSUER }}
+          RP_ID: ${{ vars.RP_ID }}
         run: |
           set -euo pipefail
           cd packages/gateway
@@ -311,9 +311,9 @@ jobs:
 
       - name: 注入 Worker secrets
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
-          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
         run: |
           set -euo pipefail
           cd packages/gateway
@@ -326,8 +326,8 @@ jobs:
 
       - name: 部署 Gateway
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           cd packages/gateway
           pnpm exec wrangler deploy
@@ -343,7 +343,7 @@ jobs:
       - name: 解析线上地址
         id: url
         env:
-          ISSUER: ${{ vars.ISSUER }
+          ISSUER: ${{ vars.ISSUER }}
         run: |
           if [ -n "${ISSUER:-}" ]; then
             echo "base=$ISSUER" >> "$GITHUB_OUTPUT"
@@ -355,7 +355,7 @@ jobs:
       - name: 冒烟测试
         if: steps.url.outputs.base != ''
         env:
-          BASE: ${{ steps.url.outputs.base }
+          BASE: ${{ steps.url.outputs.base }}
         run: |
           set -uo pipefail
           base="${BASE%/}"

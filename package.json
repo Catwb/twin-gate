@@ -14,7 +14,7 @@
     "dev:gateway": "pnpm --filter @sso/gateway dev",
     "deploy:core": "pnpm --filter @sso/core deploy",
     "deploy:gateway": "pnpm --filter @sso/gateway deploy",
-    "check": "node scripts/check-constraints.mjs",
+    "check": "node scripts/check-constraints.mjs && node scripts/check-workflows.mjs",
     "verify": "pnpm -r typecheck && pnpm -r test && pnpm check"
   },
   "pnpm": {
