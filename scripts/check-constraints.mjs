@@ -326,7 +326,7 @@ check("部署文档的 token 权限说明含 D1", () => {
 
 check("无临时/编辑器残留文件入库", () => {
   const tracked = execSync("git ls-files", { cwd: ROOT, encoding: "utf8" });
-  const forbidden = [".gitmsg.txt", ".git-msg.txt", ".tmp-", "*.bak", ".DS_Store"];
+  const forbidden = [".gitmsg.txt", ".git-msg.txt", ".commitmsg", "*.commitmsg", ".tmp-", "*.bak", ".DS_Store"];
   const offenders = tracked
     .split("\n")
     .filter((f) => forbidden.some((pattern) => (pattern.includes("*") ? f.includes(pattern.replace("*", "")) : f === pattern)));
