@@ -274,12 +274,21 @@ jobs:
           echo "--- 生效配置 ---"
           grep -E '^(ISSUER|RP_ID|database_id)' wrangler.toml || true
 
-          # 立刻用 wrangler 自己校验 TOML 是否合法，避免带着坏配置往下走
-          pnpm exec wrangler d1 list --json > /dev/null || {
-            echo "::error::wrangler.toml 无效，请检查注入后的配置"
+          # 立刻校验 TOML 是否合法，避免带着坏配置继续往下走。
+          # 用 deploy --dry-run 而不是 d1 list：
+          #   - 它只是本地打包，不需要 API token（d1 list 需要，会把
+          #     「未配置凭证」误报成「TOML 无效」）
+          #   - 它能覆盖整个配置文件的解析，不只是 D1 段
+          if ! pnpm exec wrangler deploy --dry-run --outdir=.dryrun > /tmp/toml-check.log 2>&1; then
+            echo "::error::wrangler.toml 解析失败，请检查注入后的配置"
+            echo "--- 生成的配置 ---"
             grep -E '^(ISSUER|RP_ID|database_id)' wrangler.toml
+            echo "--- wrangler 输出 ---"
+            cat /tmp/toml-check.log
             exit 1
-          }
+          fi
+          rm -rf .dryrun
+          echo "配置校验通过"
 
       - name: D1 迁移
         if: inputs.run_migrations
@@ -372,6 +381,16 @@ jobs:
           NODE
 
           grep -E '^(ISSUER|RP_ID)' wrangler.toml || true
+
+          # 校验配置能解析（dry-run 不需凭证）
+          if ! pnpm exec wrangler deploy --dry-run --outdir=.dryrun > /tmp/gw-toml.log 2>&1; then
+            echo "::error::gateway 的 wrangler.toml 解析失败"
+            grep -E '^(ISSUER|RP_ID)' wrangler.toml
+            cat /tmp/gw-toml.log
+            exit 1
+          fi
+          rm -rf .dryrun
+          echo "配置校验通过"
 
       - name: 注入 Worker secrets
         env:

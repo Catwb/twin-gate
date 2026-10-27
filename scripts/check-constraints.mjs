@@ -362,6 +362,20 @@ check("workflow 不用 sed 修改 TOML", () => {
   return "ok";
 });
 
+check("workflow 自校验不依赖凭证", () => {
+  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
+
+  // 校验配置合法性必须用 deploy --dry-run（离线），不能用 d1 list 这类需要 API 的命令。
+  // 否则 CI 里没配 token 时会把「未认证」误报成「配置无效」。
+  if (/wrangler d1 list[^\n]*\|\|\s*\{/.test(workflow)) {
+    throw new Error("d1 list 需要凭证，不能用作配置自校验");
+  }
+  if (!workflow.includes("deploy --dry-run --outdir=.dryrun")) {
+    throw new Error("缺少离线配置校验");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {
