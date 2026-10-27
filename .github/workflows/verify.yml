@@ -1,11 +1,18 @@
 name: verify
 
+# 质量门禁。push 时自动跑，也可手动触发。
+# 部署不在这里 —— 见 deploy.yml（手动触发，全程 GitHub Actions）。
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -38,12 +45,13 @@ jobs:
       - name: Build gateway
         run: pnpm --filter @sso/gateway build
 
-      - name: Dry-run deploy (Core)
-        run: pnpm --filter @sso/core exec wrangler deploy --dry-run --outdir=.dryrun
-        env:
-          CLOUDFLARE_API_TOKEN: dummy
-
-      - name: Dry-run deploy (Gateway)
-        run: pnpm --filter @sso/gateway exec wrangler deploy --dry-run --outdir=.dryrun
-        env:
-          CLOUDFLARE_API_TOKEN: dummy
+      - name: Assert build output complete
+        run: |
+          cd packages/gateway
+          for f in dist/login.html dist/mfa.html dist/404.html dist/_headers dist/assets/app.css dist/assets/app.js dist/assets/security.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing build artifact: $f"
+              exit 1
+            fi
+          done
+          echo "build output complete"

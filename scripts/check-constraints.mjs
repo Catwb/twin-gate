@@ -290,6 +290,27 @@ check("管理端写操作必须挂角色校验", () => {
   return "ok";
 });
 
+check("部署 workflow 具备必要的安全步骤", () => {
+  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
+  for (const required of ["workflow_dispatch", "inputs.confirm", "run_migrations", "smoke"]) {
+    if (!workflow.includes(required)) throw new Error(`deploy.yml 缺少 ${required}`);
+  }
+  // 必须手动触发，不能 push 自动部署
+  if (/^  push:/m.test(workflow)) throw new Error("deploy.yml 不应由 push 触发");
+  // 必须注入 secret，且两个 Worker 都拿到 GATEWAY_TOKEN
+  const bulkCount = (workflow.match(/secret bulk/g) ?? []).length;
+  if (bulkCount < 2) throw new Error("两个 Worker 都应注入 secret");
+  return "ok";
+});
+
+check("verify workflow 只做门禁不部署", () => {
+  const workflow = read(join(ROOT, ".github/workflows/verify.yml"));
+  if (/wrangler deploy(?! --dry-run)/.test(workflow)) {
+    throw new Error("verify.yml 不应执行真实部署");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

@@ -2,8 +2,8 @@
 
 > 目标读者：第一次把这套 SSO 部署到 Cloudflare 的人。
 >
-> **部署形态：Git 导入 + Workers Builds。** 仓库推到 GitHub/GitLab，两个 Worker 各自连同一个仓库、
-> 各自指定 root directory，push 即构建部署。本地 `wrangler` 只负责建库、迁移、种子和应急。
+> **部署形态：GitHub Actions 全程。** 仓库在 GitHub，手动触发 `deploy.yml` 完成构建与部署。
+> 本地 `wrangler` 只负责种子超管、查库、备份和应急回滚。
 >
 > 全程只用 **pnpm**。`npm install` / `npx` 会被 `scripts/preinstall.mjs` 直接阻断，这是故意的。
 
@@ -12,38 +12,31 @@
 ## 0. 部署形态一览
 
 ```
-        git push
-           │
-           ▼
-  ┌────────────────────┐        ┌────────────────────┐
-  │  Workers Builds    │  ×2   │  Workers Builds    │
-  │  root: packages/   │        │  root: packages/   │
-  │        core        │        │        gateway     │
-  │  build: (空)        │        │  build: pnpm build │
-  │  deploy: wrangler  │        │  deploy: wrangler  │
-  └─────────┬──────────┘        └─────────┬──────────┘
-            ▼                             ▼
-      sso-core                       sso-gateway
-   （无公网路由）                    （自定义域名）
-     D1 + Cron                  Service Binding + Assets
+  git push
+     │
+     ▼
+  GitHub Actions
+  ├─ verify.yml    自动：类型 + 单测 + 门禁 + 构建
+  └─ deploy.yml    手动：guard → verify → build → resolve-d1
+                          → deploy-core → deploy-gateway → smoke
+     │
+     ▼
+  Cloudflare
+  ┌──────────────────────────────────────────────┐
+  │  sso-gateway   公网 + 自定义域名              │
+  │  ├─ Service Binding → Core                   │
+  │  └─ Workers Assets（登录/MFA/静态资源）        │
+  └────────────────┬─────────────────────────────┘
+                   │  X-Gateway-Token（身份只走 body）
+  ┌────────────────▼─────────────────────────────┐
+  │  sso-core      无公网路由                     │
+  │  ├─ D1（唯一数据访问层）                       │
+  │  └─ Cron（每 15 分钟分批清理）                 │
+  └──────────────────────────────────────────────┘
 ```
 
-本地只做四件事：建 D1、跑迁移、种子超管、导出备份。其余全由 Git 驱动。
-
----
-
-## 目录
-
-1. [部署前必须想清楚的四件事](#1-部署前必须想清楚的四件事)
-2. [环境要求](#2-环境要求)
-3. [仓库结构与部署产物](#3-仓库结构与部署产物)
-4. [第一次部署（Git 连接 Workers Builds）](#4-第一次部署git-连接-workers-builds)
-5. [验证清单](#5-验证清单)
-6. [配置 OIDC 下游应用](#6-配置-oidc-下游应用)
-7. [日常运维](#7-日常运维)
-8. [密钥轮换](#8-密钥轮换)
-9. [事故处置](#9-事故处置)
-10. [常见问题](#10-常见问题)
+**本地只做三件事**：种子第一个超管、查库、导出备份。
+**部署不需要本地操作。**
 
 ---
 
@@ -185,68 +178,78 @@ sso/
 
 ---
 
-## 4. 第一次部署（Git 连接 Workers Builds）
+## 4. 第一次部署（GitHub Actions 全程）
 
-> 主线是 **Git 导入**：仓库推到 GitHub/GitLab，两个 Worker 各自连接同一个仓库、各自指定 root directory。
-> 本地 `wrangler deploy` 只在首次建库与应急时使用。
+> **部署完全由 GitHub Actions 执行**，本地不需要跑 `wrangler deploy`。
+> 手动触发：GitHub → Actions → **deploy** → Run workflow。
 
-### 4.0 为什么是「两个 Worker 连同一个仓库」
+### 4.0 整体流程
 
-`sso-core` 与 `sso-gateway` 是两个独立 Worker，但共享一个 monorepo。
-Workers Builds 的 monorepo 做法是：**每个 Worker 连一次同一个仓库，各自设置 root directory**。
+```
+你 push 代码
+     │
+     ▼
+verify.yml        自动跑：类型检查 + 单测 + 门禁 + 构建
+     │
+     ▼
+你在 Actions 页面点 Run workflow（输入 DEPLOY 确认）
+     │
+     ▼
+deploy.yml
+  ├─ guard        敏感文件检查
+  ├─ verify       再跑一遍（防止跳过）
+  ├─ build        构建 + 断言产物 + 打包验证
+  ├─ resolve-d1   查询或创建 sso-db，拿到 database_id
+  ├─ deploy-core  注入配置 → 迁移(可选) → 注入 secret → 部署
+  ├─ deploy-gateway  构建 → 注入配置 → 注入 secret → 部署
+  └─ smoke        线上冒烟测试（7 项）
+```
 
-| Worker | Root directory | Build command | Deploy command |
-|---|---|---|---|
-| `sso-core` | `packages/core` | （留空） | `pnpm exec wrangler deploy` |
-| `sso-gateway` | `packages/gateway` | `pnpm build` | `pnpm exec wrangler deploy` |
-
-两条硬性要求，踩了会直接 build 失败：
-
-1. **Worker 名必须与 `wrangler.toml` 里的 `name` 完全一致**（`sso-core` / `sso-gateway`）。
-   Dashboard 建 Worker 时名字写错，构建立刻报 workers-name 错误。
-2. **root directory 的 `package.json` 必须声明 `packageManager`**。
-   本项目三个 `package.json`（根、core、gateway）都写了 `"packageManager": "pnpm@10.34.4"`，无需改动。
-
-> 构建镜像默认带 pnpm 10.11.1，我们的 `packageManager` 会把它升到 10.34.4。
-> 工作区的 `workspace:*` 协议由 pnpm 解析 —— **npm 会直接失败**，这也是仓库里 `preinstall.mjs` 强制 pnpm 的原因。
+**关键点：`database_id` 不写进仓库。** workflow 每次运行时动态查询，
+用 `sed` 注入到临时生成的 `wrangler.toml` 里。仓库里永远是占位符。
 
 ---
 
-### 步骤 1：把仓库推到 Git
+### 步骤 1：把仓库推到 GitHub
 
 ```bash
 git init
 git add .
 git commit -m "初始提交"
-git remote add origin git@github.com:<you>/sso.git
+git remote add origin git@github.com:<你>/twin-gate.git
 git push -u origin main
 ```
 
-**推送前确认这些没被提交**（`.gitignore` 已覆盖）：
-
-| 不该入库 | 原因 |
-|---|---|
-| `.dev.vars` | 本地开发用 secret |
-| `dist/`、`packages/gateway/public/assets/` | 构建产物，CI 会重新生成 |
-| `*.sql`（除 migrations） | 种子/备份文件含密码哈希 |
-| `.wrangler/` | 本地状态 |
-
-验证一下：
+推送前自查（应该没输出）：
 
 ```bash
-git ls-files | grep -E "dev[.]vars|dist/|public/assets|seed[.]sql"
-# 应该没有任何输出
+git ls-files | grep -E "dev[.]vars$|seed[.]sql|backup-"
 ```
 
 ---
 
-### 步骤 2：生成并保存 secret（本地做，不进仓库）
+### 步骤 2：创建 Cloudflare API Token
+
+Dashboard → 右上头像 → **My Profile** → **API Tokens** → **Create Token**：
+
+1. 选 **Edit Cloudflare Workers** 模板
+2. Account Resources：**只选你要部署的那个账号**
+3. Zone Resources：可以留空（本项目不用 Zone 级权限）
+4. 创建后**立刻复制** token（只显示一次）
+
+再记下 **Account ID**：Dashboard → Workers & Pages → 右侧栏底部。
+
+> ⚠️ 不要用 Global API Key。它权限过大，泄露等于整个账号失守。
+
+---
+
+### 步骤 3：生成四个运行时 secret
 
 ```bash
 node scripts/gen-secrets.mjs
 ```
 
-输出四个值，**立刻保存到密码管理器**：
+输出四个值，**立刻存进密码管理器**：
 
 ```
 SESSION_PEPPER=<44 字符>
@@ -255,261 +258,138 @@ GATEWAY_TOKEN=<44 字符>
 SIGNING_KEYS_JSON=[{"kid":"k20261027",...}]
 ```
 
-> 存放纪律见第 1.4 节：`SESSION_PEPPER` 的备份必须与 D1 备份**分开存放**。
+> `SIGNING_KEYS_JSON` 是整行 JSON，含首尾方括号，复制时别截断。
+> `SESSION_PEPPER` 的备份必须与将来的 D1 备份**分开存放**。
 
 ---
 
-### 步骤 3：创建 D1 数据库（本地执行一次）
+### 步骤 4：配置 GitHub Secrets 与 Variables
 
-Git 部署**不会**替你建库，这一步必须在本地做。
+仓库 → **Settings** → **Secrets and variables** → **Actions**。
+
+#### Secrets（必须）
+
+| 名称 | 值 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | 步骤 2 创建的 token |
+| `CLOUDFLARE_ACCOUNT_ID` | 步骤 2 记下的 Account ID |
+| `GATEWAY_TOKEN` | 步骤 3 生成 |
+| `SESSION_PEPPER` | 步骤 3 生成 |
+| `TOTP_MASTER_KEY` | 步骤 3 生成 |
+| `SIGNING_KEYS_JSON` | 步骤 3 生成（整行 JSON） |
+
+#### Variables（建议配置）
+
+| 名称 | 示例 | 说明 |
+|---|---|---|
+| `ISSUER` | `https://sso.example.com` | **一经发布不可更改** |
+| `RP_ID` | `sso.example.com` | WebAuthn 的 RP ID，不带协议 |
+
+> 不配 Variables 的话，会沿用仓库里 `wrangler.toml` 的 `localhost` 默认值——
+> 那只能本地用。**生产必须配。**
+
+---
+
+### 步骤 5：绑定自定义域名（只做一次）
+
+`ISSUER` 里的域名必须先指向 Gateway，否则登录页打不开。
+
+两种方式：
+
+**A. 先部署一次再绑（推荐）**
+
+1. 跑一次 workflow（`target: gateway`）
+2. Dashboard → Workers & Pages → `sso-gateway` → **Settings** → **Domains & Routes**
+3. **Add Custom Domain** → 填 `sso.example.com`
+
+**B. 直接在 Dashboard 建 Worker 占位**
+
+Workers & Pages → Create → Worker → 命名 `sso-gateway` → Deploy。
+之后再跑 workflow 覆盖它。
+
+> Core **不要**绑任何域名。它必须保持公网不可达。
+
+---
+
+### 步骤 6：第一次部署
+
+GitHub → **Actions** → 左侧选 **deploy** → **Run workflow**：
+
+| 输入 | 第一次部署填什么 |
+|---|---|
+| `target` | `both` |
+| `run_migrations` | **`true`**（首次必须建表） |
+| `confirm` | `DEPLOY` |
+
+点 **Run workflow**。
+
+**job 顺序与预期：**
+
+| Job | 做什么 | 失败时看什么 |
+|---|---|---|
+| guard | 敏感文件检查 | 哪个文件被误提交 |
+| verify | 类型/测试/门禁 | 具体哪条门禁红 |
+| build | 构建 + 产物断言 | 缺哪个 dist 文件 |
+| resolve-d1 | 查/建 sso-db | token 权限是否够 |
+| deploy-core | 部署 + 迁移 + secret | 缺哪个 secret |
+| deploy-gateway | 构建 + 部署 | 构建产物或 secret |
+| smoke | 线上 7 项检查 | 哪一项没通过 |
+
+> **后续部署**：`run_migrations` 保持 `false`，除非你新增了迁移文件。
+
+---
+
+### 步骤 7：种子第一个超管
+
+这一步**仍是本地操作**——因为它要直接写库，不适合放进 CI。
+
+先拿到 `database_id`（workflow 的 `resolve-d1` job 日志里有，或本地跑）：
 
 ```bash
 pnpm install
-pnpm --filter @sso/core exec wrangler d1 create sso-db
+pnpm --filter @sso/core exec wrangler d1 list --json
+# 找到 name 为 sso-db 的那条，复制 uuid
 ```
 
-把输出的 `database_id` 填进 `packages/core/wrangler.toml`：
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "sso-db"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"   # ← 替换
-migrations_dir = "migrations"
-```
-
-**提交这个改动并推送。** CI 需要它才能找到数据库。
-
-> `database_id` 不是凭证，可以入库。绝不能入库的是 password / pepper / 私钥 / API token。
-
----
-
-### 步骤 4：应用数据库迁移（本地执行一次）
-
-```bash
-pnpm --filter @sso/core db:migrate:remote
-```
-
-期望两个迁移都成功：
-
-```
-0001_init.sql   ✅
-0002_mfa.sql    ✅
-```
-
-> 迁移**不放进 CI**。迁移失败会让整个部署卡住，而它通常只需本地人工确认一次。
-> 后续新增迁移时，同样在本地跑这条命令。
-
-验证表已建立：
-
-```bash
-pnpm --filter @sso/core exec wrangler d1 execute sso-db --remote \
-  --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-```
-
-应看到 15 张表：`access_tokens`、`apps`、`audit_logs`、`authorization_codes`、`invitations`、
-`mfa_factors`、`mfa_recovery_codes`、`oidc_states`、`passkey_challenges`、`passkeys`、
-`password_resets`、`rate_limits`、`sessions`、`signing_keys`、`users`。
-
----
-
-### 步骤 5：修改生产配置并推送
-
-**两个文件都要改**，且 `ISSUER` / `RP_ID` 必须**完全一致**。
-
-`packages/core/wrangler.toml`：
-
-```toml
-[vars]
-ISSUER = "https://sso.your-domain.com"
-RP_ID = "sso.your-domain.com"
-```
-
-`packages/gateway/wrangler.toml`：
-
-```toml
-[vars]
-ISSUER = "https://sso.your-domain.com"
-RP_ID = "sso.your-domain.com"
-INVITE_ENABLED = "false"
-```
-
-注意 Gateway 的生产配置**不能有** `run_worker_first`（免费版超额会 429 且不回退静态资源）。
-`wrangler.toml` 里已用注释标出，改配置时别加回去。
-
-```bash
-git add packages/core/wrangler.toml packages/gateway/wrangler.toml
-git commit -m "配置生产域名"
-git push
-```
-
----
-
-### 步骤 6：连接 Core 到 Git
-
-**先在本地把 Core 创建出来**，否则 Dashboard 里连不到已存在的 Worker：
-
-```bash
-cd packages/core
-pnpm exec wrangler deploy
-```
-
-这次本地部署只为「占位」（把 `sso-core` 这个名字注册到账号下）。之后都由 Git 接管。
-
-然后去 Dashboard：
-
-1. **Workers & Pages** → 选中 `sso-core`
-2. **Settings** → **Builds** → **Connect**
-3. 选择仓库与分支（`main`）
-4. 配置构建参数：
-
-| 字段 | 值 |
-|---|---|
-| **Root directory** | `packages/core` |
-| **Build command** | （留空） |
-| **Deploy command** | `pnpm exec wrangler deploy` |
-| **Preview command** | 不启用 |
-
-> Preview 默认命令是 `npx wrangler preview` —— 本项目**不用**，因为 Core 的设计前提就是
-> 「不可预览、不可公网访问」。如果 Dashboard 强制要求填写，写 `pnpm exec wrangler versions upload`。
-
-5. **Save**，然后推一个 commit 触发构建。
-
----
-
-### 步骤 7：注入 Core 的 secret
-
-**secret 不通过 Git 传递**，必须在 Dashboard 或本地 wrangler 注入。
-
-**A. Dashboard（推荐，Git 流程下更自然）**
-
-Workers & Pages → `sso-core` → Settings → **Variables and Secrets** → Add：
-
-| 名称 | 类型 | 值 |
-|---|---|---|
-| `GATEWAY_TOKEN` | Secret | 步骤 2 生成的值 |
-| `SESSION_PEPPER` | Secret | 同上 |
-| `TOTP_MASTER_KEY` | Secret | 同上 |
-| `SIGNING_KEYS_JSON` | Secret | 整行 JSON |
-
-每个都要选 **Encrypt**（Secret），不是 plaintext。
-
-**B. 本地 wrangler**
-
-```bash
-cd packages/core
-pnpm exec wrangler secret put GATEWAY_TOKEN
-pnpm exec wrangler secret put SESSION_PEPPER
-pnpm exec wrangler secret put TOTP_MASTER_KEY
-pnpm exec wrangler secret put SIGNING_KEYS_JSON
-```
-
-> `wrangler.toml` 里有 `[secrets] required`，**四个缺任何一个，Git 构建会直接失败**。
-> 这是刻意的：宁可构建失败，也不要「部署成功但线上 500」。
-
-**验证 Core 不可达（没通过就别继续）：**
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" https://sso-core.<your-subdomain>.workers.dev
-```
-
-期望：**不是 200**（404 或 DNS 无解析）。返回 200 说明 `workers_dev = false` 被改坏了，**立刻停下**。
-
----
-
-### 步骤 8：连接 Gateway 到 Git
-
-同样先在本地占位：
-
-```bash
-cd ../gateway
-pnpm build
-pnpm exec wrangler deploy
-```
-
-然后 Dashboard → `sso-gateway` → Settings → Builds → Connect：
-
-| 字段 | 值 |
-|---|---|
-| **Root directory** | `packages/gateway` |
-| **Build command** | `pnpm build` |
-| **Deploy command** | `pnpm exec wrangler deploy` |
-| **Preview command** | 不启用 |
-
-> Gateway 的 `pnpm build` 是必须的：它生成 `dist/`（Assets 目录）与 `public/assets/*.js`。
-> 不跑构建，`wrangler deploy` 会因为找不到 `dist` 报错。
-
-**注入 Gateway 的 secret：**
-
-`GATEWAY_TOKEN` —— **必须与 Core 完全相同的值**。
-
-Dashboard → `sso-gateway` → Settings → Variables and Secrets → Add → `GATEWAY_TOKEN` → Encrypt。
-
-> ⚠️ 两边不一致的典型症状：**登录页能打开，一提交就 500**。
-> 因为 Gateway 拿错误的 token 调 Core，Core 一律返回 401。
-
-**绑定自定义域名：**
-
-Workers & Pages → `sso-gateway` → Settings → Domains & Routes → Add Custom Domain →
-`sso.your-domain.com`。
-
-> 这一步必须在第一次实际登录前完成。issuer 已写进配置，域名要和它一致。
-
----
-
-### 步骤 9：种子第一个超管（本地执行一次）
-
-这是整个流程里**唯一**绕过 Core 直接写库的操作。
+生成种子 SQL：
 
 ```bash
 # Linux / macOS
-SESSION_PEPPER='<步骤 2 的 pepper>' node scripts/seed-superadmin.mjs \
+SESSION_PEPPER='<步骤 3 的 pepper>' node scripts/seed-superadmin.mjs \
   --email you@example.com --password '<临时密码>' > seed.sql
 
 # Windows PowerShell
-$env:SESSION_PEPPER='<步骤 2 的 pepper>'
+$env:SESSION_PEPPER='<步骤 3 的 pepper>'
 node scripts/seed-superadmin.mjs --email you@example.com --password '<临时密码>' > seed.sql
 ```
 
-**先看生成的 SQL：**
+检查后执行（需要先登录 wrangler）：
 
 ```bash
-cat seed.sql
-# INSERT INTO users (...) VALUES ('...', 'you@example.com',
-#   '<64位十六进制>', 'super_admin', 'active', 1, ...);
-```
-
-确认后执行并立刻删除：
-
-```bash
+pnpm exec wrangler login
 pnpm --filter @sso/core exec wrangler d1 execute sso-db --remote --file=./seed.sql
 rm seed.sql
 ```
 
-要点：
-
-- 密码至少 12 位（脚本会拒绝更短的）
-- `must_change_password = 1` —— 首次登录强制改密
-- `password_hash` = `HMAC-SHA256(SESSION_PEPPER, 明文)`，**必须用你注入的那个 pepper**
+> 这是**唯一**一个绕过 Core 直接写库的步骤，属于运维例外。
+> 密码至少 12 位；`password_hash` 必须用你注入的那个 pepper 计算。
 
 ---
 
-### 步骤 10：首次登录并绑定 MFA
+### 步骤 8：首次登录并绑定 MFA
 
 1. 打开 `https://sso.your-domain.com/login`
-2. 用种子邮箱与临时密码登录
-3. **会被强制跳到 `/admin/security`** —— 超管 MFA 门禁在工作
+2. 用种子邮箱 + 临时密码登录
+3. **被强制跳到 `/admin/security`** —— 超管门禁在工作
 4. 二选一绑定：
-   - **Passkey**：点「绑定新设备」，用指纹/面容
-   - **TOTP**：点「启用 TOTP」，页面显示 issuer 与密钥，验证器手动添加后输入 6 位码
+   - **Passkey**：点「绑定新设备」
+   - **TOTP**：点「启用 TOTP」，页面显示 issuer 与密钥，验证器手动添加
 5. **保存 10 个恢复码**（只显示一次）
-6. 绑定成功后即可进入 `/admin`
-
-> 建议绑两个 Passkey（手机 + 电脑），或 Passkey + TOTP，再加恢复码。
+6. 绑定后可进 `/admin`
 
 ---
 
-### 步骤 11：建第二个超管
+### 步骤 9：建第二个超管
 
 ```bash
 SESSION_PEPPER='<pepper>' node scripts/seed-superadmin.mjs \
@@ -519,43 +399,53 @@ pnpm --filter @sso/core exec wrangler d1 execute sso-db --remote --file=./seed2.
 rm seed2.sql
 ```
 
-**这一步不能省。** 唯一超管失联 = 全租户锁死。
+**不能省。** 唯一超管失联 = 全租户锁死。
 
 ---
 
-### 4.12 Git 部署的日常节奏
-
-连接完成后，日常只有一件事：
+### 4.10 日常部署节奏
 
 ```bash
 git add .
 git commit -m "..."
-git push
+git push          # 触发 verify.yml，只做质量门禁
 ```
 
-推送后两个 Worker **都会**触发构建。只想让其中一个重建，用 **Build watch paths**：
+然后去 Actions 页面手动跑 `deploy`。
 
-| Worker | Watch paths |
-|---|---|
-| `sso-core` | `packages/core/**`, `packages/shared/**` |
-| `sso-gateway` | `packages/gateway/**`, `packages/shared/**` |
+**常用组合：**
 
-在 Dashboard → Worker → Settings → Builds → Watch paths 配置。
+| 场景 | target | run_migrations |
+|---|---|---|
+| 改了前端/路由 | `gateway` | false |
+| 改了 Core 逻辑 | `core` | false |
+| 新增了迁移文件 | `both` | **true** |
+| 全量重部 | `both` | false |
+| 只回滚 | 见 4.11 | — |
 
-> `packages/shared/**` 必须同时出现在两边 —— 它是共享常量包，改了它两个 Worker 都要重建。
+### 4.11 回滚
 
-### 4.13 什么时候仍然需要本地 wrangler
+Cloudflare 保留历史版本：
+
+```bash
+pnpm exec wrangler deployments list
+pnpm exec wrangler rollback <deployment-id> --name sso-gateway
+```
+
+> 回滚只回代码，**不回数据库**。迁移是不可逆的，回滚前确认没有新增迁移。
+
+### 4.12 本地还能做什么
 
 | 场景 | 命令 |
 |---|---|
-| 创建 D1 数据库 | `wrangler d1 create` |
-| 应用迁移 | `wrangler d1 migrations apply` |
-| 种子超管 / 建客户端 | `wrangler d1 execute --file=` |
-| 首次占位部署 | `wrangler deploy` |
+| 本地开发 | `pnpm dev:core` / `pnpm dev:gateway` |
+| 跑全部检查 | `pnpm verify` |
+| 建/查数据库 | `wrangler d1 list` / `wrangler d1 execute` |
+| 种子超管 | `wrangler d1 execute --file=` |
 | 导出备份 | `wrangler d1 export` |
 | 应急回滚 | `wrangler rollback` |
 
-这六件事 Git 流程不做。
+**日常部署不需要本地做任何事。**
 
 ---
 

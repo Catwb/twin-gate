@@ -57,14 +57,18 @@ pnpm dev:gateway   # 8787
 
 ## 部署形态
 
-Git 导入 + Workers Builds。两个 Worker 连同一个仓库，各自指定 root directory：
+**GitHub Actions 全程部署，手动触发。**
 
-| Worker | Root directory | Build command | Deploy command |
-|---|---|---|---|
-| `sso-core` | `packages/core` | （留空） | `pnpm exec wrangler deploy` |
-| `sso-gateway` | `packages/gateway` | `pnpm build` | `pnpm exec wrangler deploy` |
+| Workflow | 触发 | 作用 |
+|---|---|---|
+| `verify.yml` | push 自动 | 类型检查 + 单测 + 47 条门禁 + 构建 |
+| `deploy.yml` | **手动** | guard → verify → build → 建库 → 部署 Core → 部署 Gateway → 冒烟测试 |
 
-本地 `wrangler` 只负责：建 D1、跑迁移、种子超管、导出备份。
+部署不需要本地操作。本地只负责：种子第一个超管、查库、导出备份、应急回滚。
+
+`database_id` 不写进仓库 —— workflow 每次运行时动态查询后注入。
+
+详见 [docs/deploy.md](docs/deploy.md)。
 
 ## 验证
 
