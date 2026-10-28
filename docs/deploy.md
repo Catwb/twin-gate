@@ -152,7 +152,7 @@ sso/
 ├── packages/
 │   ├── shared/          常量与类型（角色、TTL、分页上限）
 │   ├── core/            ★ 无公网路由，仅 D1 + Cron
-│   │   ├── migrations/  D1 迁移（0001_init.sql、0002_mfa.sql）
+│   │   ├── migrations/  D1 迁移（0001 / 0002_mfa / 0003_authorization_code_session）
 │   │   ├── src/
 │   │   └── wrangler.toml
 │   └── gateway/         ★ 公网入口，仅 Service Binding + Assets
@@ -1025,5 +1025,5 @@ curl https://sso.your-domain.com/.well-known/openid-configuration | grep issuer
 pnpm verify
 ```
 
-包含：类型检查（3 包）+ 单元测试（75 个）+ 硬约束门禁（28 条）。
+包含：类型检查（3 包）+ 单元测试（75 个）+ 硬约束门禁（32 条）。
 CI 里跑这一条即可。

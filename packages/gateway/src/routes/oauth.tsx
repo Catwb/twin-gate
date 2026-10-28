@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { SESSION_COOKIE, TTL } from "@sso/shared";
 import { callCore } from "../core/callCore";
@@ -15,7 +16,15 @@ import type { AppContext } from "../types";
 
 export const oauthRoutes = new Hono<AppContext>();
 
-function oauthError(c: Parameters<typeof callCore>[0] extends never ? never : any, error: string, description: string, status = 400) {
+/** OIDC 错误响应统一走这里，避免各分支自己拼 {"error": ...}。 */
+function oauthError(
+  c: Context<AppContext>,
+  error: string,
+  description: string,
+  status: 400 | 401 = 400,
+) {
+  // RFC 6749 §5.2：错误响应必须禁止缓存。
+  c.header("cache-control", "no-store");
   return c.json({ error, error_description: description }, status);
 }
 
@@ -85,6 +94,9 @@ oauthRoutes.get("/oauth/authorize", async (c) => {
       codeChallengeMethod,
       scope: normalizeScope(scope),
       userId: session.userId,
+      // 授权码必须记住是哪个会话发起的 —— token/exchange 拿不到 Cookie，
+      // 少了它就只能反查"该用户某个活跃会话"，多浏览器时会指错。
+      sessionId: session.sessionId,
     },
   });
 

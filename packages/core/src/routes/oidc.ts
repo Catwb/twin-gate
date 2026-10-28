@@ -1,6 +1,8 @@
 import { Hono } from "hono";
+import { and, eq, gt, isNull } from "drizzle-orm";
+import { sessions } from "../db/schema";
 import { z } from "zod";
-import { Role, TTL } from "@sso/shared";
+import { PAGE_SIZE, Role, TTL } from "@sso/shared";
 import type { Env } from "../types";
 import { getDb } from "../db/client";
 import { safeAudit } from "../services/audit";
@@ -30,7 +32,6 @@ import { activeKey, buildJwks, listSigningKeys, parseKeySet, syncSigningKeys } f
 import { signJwt } from "../lib/jwt";
 import { findUserById } from "../services/users";
 import { listActiveSessions, listSessionsOfUser } from "../services/sessions-list";
-import { PAGE_SIZE } from "@sso/shared";
 
 type Variables = { db: ReturnType<typeof getDb> };
 
@@ -205,6 +206,11 @@ const authorizeSchema = z.object({
   codeChallengeMethod: z.string().min(1),
   scope: z.string().min(1).max(200),
   userId: z.string().min(1),
+  /**
+   * 发起授权的会话 id。
+   * 必填 —— 授权码离开这一层后，再没有任何地方能知道是哪个会话发起的。
+   */
+  sessionId: z.string().min(1),
 });
 
 oidcRoutes.post("/authorize/prepare", async (c) => {
@@ -234,6 +240,7 @@ oidcRoutes.post("/authorize/prepare", async (c) => {
   const issued = await issueAuthorizationCode(db, {
     clientId: parsed.data.clientId,
     userId: parsed.data.userId,
+    sessionId: parsed.data.sessionId,
     redirectUri: parsed.data.redirectUri,
     codeChallenge: parsed.data.codeChallenge,
     codeChallengeMethod: parsed.data.codeChallengeMethod,
@@ -282,14 +289,26 @@ oidcRoutes.post("/token/exchange", async (c) => {
   const user = await findUserById(db, codeRow.userId);
   if (!user || user.status !== "active") return c.json({ ok: false, code: "invalid_grant" }, 400);
 
-  const { sessions } = await import("../db/schema");
-  const { and, eq, isNull } = await import("drizzle-orm");
+  // sid 必须来自发起授权的那个会话，而不是"该用户的某个活跃会话"。
+  // 同一用户开两个浏览器时，后者会指错会话 —— 将来做 Back-channel Logout 会踢错人。
+  // 授权码里没有 session_id 只有一种可能：它是本次迁移之前签发的在途码。
+  const sessionId = codeRow.sessionId;
+  if (!sessionId) return c.json({ ok: false, code: "invalid_grant" }, 400);
+
+  // 会话本身必须仍然有效：授权码 60 秒内可能已被吊销（登出、被踢、改密）。
   const sessionRows = await db
     .select({ id: sessions.id })
     .from(sessions)
-    .where(and(eq(sessions.userId, user.id), isNull(sessions.revokedAt), eq(sessions.status, "active")))
+    .where(
+      and(
+        eq(sessions.id, sessionId),
+        eq(sessions.userId, user.id),
+        isNull(sessions.revokedAt),
+        gt(sessions.expiresAt, Math.floor(Date.now() / 1000)),
+      ),
+    )
     .limit(1);
-  const sessionId = sessionRows[0]?.id ?? "";
+  if (sessionRows.length === 0) return c.json({ ok: false, code: "invalid_grant" }, 400);
 
   const accessToken = await issueAccessToken(db, {
     userId: user.id,

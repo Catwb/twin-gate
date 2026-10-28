@@ -1,9 +1,13 @@
 # Static assets: fixed filenames, so no long-lived cache.
+# 每新增一个构建产物都必须在这里补一条 —— 文件名不带 hash，
+# 漏掉的文件会按 Assets 默认策略走，改版后浏览器可能继续用旧脚本。
 /assets/app.css
   Cache-Control: public, max-age=0, must-revalidate
 /assets/app.js
   Cache-Control: public, max-age=0, must-revalidate
 /assets/security.js
+  Cache-Control: public, max-age=0, must-revalidate
+/assets/password.js
   Cache-Control: public, max-age=0, must-revalidate
 
 # Security headers for static pages.

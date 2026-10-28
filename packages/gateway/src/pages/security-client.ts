@@ -4,7 +4,13 @@
  * 安全设置页的交互脚本。
  * 与登录页共用同一批 WebAuthn / 请求工具，产物是 /assets/security.js。
  */
-import { base64urlToBuffer, bufferToBase64url, postJson, setHint } from "./webauthn";
+import {
+  base64urlToBuffer,
+  bufferToBase64url,
+  describeWebAuthnException,
+  postJson,
+  setHint,
+} from "./webauthn";
 
 /**
  * 统一提示入口。
@@ -28,32 +34,6 @@ function hint(text: string): void {
  * 把 Core 的错误码翻译成可操作提示。
  * 之前只显示"绑定失败"，排查时看不出是域名不匹配还是用户取消。
  */
-/**
- * 把浏览器抛出的 DOMException 翻译成可操作提示。
- * 移动端 Chrome 最常见的是 NotAllowedError（用户取消或超时）
- * 与 SecurityError（rpId 与当前域名不匹配）。
- */
-function describeWebAuthnException(name: string, message: string): string {
-  switch (name) {
-    case "NotAllowedError":
-      return "已取消或超时。请确认已用指纹/面容/PIN 完成验证";
-    case "SecurityError":
-      return "安全错误：当前域名与 RP_ID 不匹配。请用配置的正式域名访问（不能是 IP 或别的域名）";
-    case "InvalidStateError":
-      return "该设备已绑定过此账号的 Passkey。可换一台设备，或先在系统设置里删除旧凭证";
-    case "NotSupportedError":
-      return "此浏览器或设备不支持所需的验证方式";
-    case "AbortError":
-      return "操作被中断，请重试";
-    case "NotReadableError":
-      return "系统凭证管理器无法响应。请检查：① 手机已设置屏幕锁（PIN/密码，仅有指纹不够）② Chrome 的密码管理器已启用 ③ 不是在工作资料或无痕模式下操作";
-    case "UnknownError":
-      return "系统返回未知错误。可尝试换一种验证方式（如改用验证器 App 的 TOTP）";
-    default:
-      return `绑定失败：${name} ${message ? "- " + message : ""}`.trim();
-  }
-}
-
 function describePasskeyError(code?: string | null, fallback?: string): string {
   switch (code) {
     case "invalid_challenge":

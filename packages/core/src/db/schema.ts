@@ -122,6 +122,16 @@ export const authorizationCodes = sqliteTable(
     codeHash: text("code_hash").primaryKey(),
     clientId: text("client_id").notNull(),
     userId: text("user_id").notNull(),
+    /**
+     * 发起授权的会话 id。
+     *
+     * 必须在 /authorize/prepare 时就记下来 —— token/exchange 是服务端到服务端的
+     * 无状态调用，拿不到 Cookie，只能靠这里传下去。之前靠反查"该用户某个活跃会话"，
+     * 多浏览器场景会指错会话。
+     *
+     * 可空仅为兼容迁移前在途的授权码（60 秒后自然消失）。
+     */
+    sessionId: text("session_id"),
     redirectUri: text("redirect_uri").notNull(),
     codeChallenge: text("code_challenge").notNull(),
     codeChallengeMethod: text("code_challenge_method").notNull(),

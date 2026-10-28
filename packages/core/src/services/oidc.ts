@@ -2,7 +2,7 @@ import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import { TTL } from "@sso/shared";
 import type { Db } from "../db/client";
 import { accessTokens, apps, authorizationCodes, oidcStates } from "../db/schema";
-import { randomHex, sha256Hex } from "../lib/crypto";
+import { randomHex, sha256Hex, timingSafeEqual } from "../lib/crypto";
 import { nowSeconds } from "../lib/time";
 
 export type AppRecord = typeof apps.$inferSelect;
@@ -20,7 +20,10 @@ export async function verifyClientSecret(
   const app = await findApp(db, clientId);
   if (!app) return null;
   const hash = await sha256Hex(clientSecret);
-  if (hash !== app.clientSecretHash) return null;
+  // 恒定时间比较。这里比的是 SHA-256 摘要而非原文，时序泄漏在实践中很难利用，
+  // 但同一个代码库里 GATEWAY_TOKEN 用 timingSafeEqual、这里用 !== 是两套标准，
+  // 后来的人只会照着更容易的那个抄。
+  if (!timingSafeEqual(hash, app.clientSecretHash)) return null;
   return app;
 }
 
@@ -59,6 +62,8 @@ export async function issueAuthorizationCode(
   params: {
     clientId: string;
     userId: string;
+    /** 发起授权的会话：ID Token 的 sid 与访问令牌的吊销依据都来自它。 */
+    sessionId: string;
     redirectUri: string;
     codeChallenge: string;
     codeChallengeMethod: string;
@@ -75,6 +80,7 @@ export async function issueAuthorizationCode(
     codeHash,
     clientId: params.clientId,
     userId: params.userId,
+    sessionId: params.sessionId,
     redirectUri: params.redirectUri,
     codeChallenge: params.codeChallenge,
     codeChallengeMethod: params.codeChallengeMethod,
@@ -120,7 +126,9 @@ export async function verifyPkce(
 ): Promise<boolean> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier));
   const computed = base64url(new Uint8Array(digest));
-  return computed === codeChallenge;
+  // 同样是恒定时间比较。code_verifier 由客户端提供，
+  // 非恒定时间比较会给攻击者一个逐字节试探的计时侧信道。
+  return timingSafeEqual(computed, codeChallenge);
 }
 
 function base64url(bytes: Uint8Array): string {

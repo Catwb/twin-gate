@@ -93,4 +93,38 @@ describe("静态页与 SSR 页的安全头一致", () => {
     expect(raw).toContain("/*");
     expect(raw).toContain("/assets/app.css");
   });
+
+  it("_headers 覆盖 build:js 产出的每一个脚本", async () => {
+    // 上一次漏的是 password.js —— 构建脚本加了产物，_headers 和 CI 断言都没跟上。
+    // 这里直接从 package.json 的构建命令里解析产物名，加了新脚本就自动覆盖。
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, "../package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const buildJs = pkg.scripts["build:js"] ?? "";
+    const outputs = [...buildJs.matchAll(/--outfile=\S*?\/?assets\/([\w.-]+\.js)/g)].map((m) => m[1]);
+    expect(outputs.length).toBeGreaterThanOrEqual(4);
+
+    const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
+    for (const name of outputs) {
+      expect(raw, `_headers 缺少 /assets/${name} 的缓存策略`).toContain(`/assets/${name}`);
+    }
+  });
+
+  it("CSS 产物同样被 _headers 覆盖", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, "../package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const outputs = [...(pkg.scripts["build:css"] ?? "").matchAll(/--outfile=\S*?\/?assets\/([\w.-]+\.css)/g)].map((m) => m[1]);
+    expect(outputs.length).toBeGreaterThan(0);
+
+    const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
+    for (const name of outputs) {
+      expect(raw).toContain(`/assets/${name}`);
+    }
+  });
 });

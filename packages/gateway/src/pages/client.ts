@@ -4,7 +4,13 @@
  * 登录页 / MFA 页的客户端脚本。
  * 由 esbuild 打包成 /assets/app.js（固定文件名，不带 hash）。
  */
-import { base64urlToBuffer, bufferToBase64url, postJson, setHint } from "./webauthn";
+import {
+  base64urlToBuffer,
+  bufferToBase64url,
+  describeWebAuthnException,
+  postJson,
+  setHint,
+} from "./webauthn";
 
 function hint(text: string): void {
   setHint("login-hint", text);
@@ -96,8 +102,13 @@ async function loginWithPasskey(): Promise<void> {
         return;
       }
       hint(finish.message ?? "Passkey 验证失败");
-    } catch {
-      hint("Passkey 验证被取消");
+    } catch (error) {
+      // 以前这里是不带绑定的 catch，把网络错误、500、JSON 解析失败
+      // 全都说成"验证被取消"。用户会以为自己按了取消，因此不会重试。
+      console.error("[passkey] 登录异常:", error);
+      const name = error instanceof Error ? error.name : "UnknownError";
+      const message = error instanceof Error ? error.message : String(error);
+      hint(describeWebAuthnException(name, message));
     } finally {
       button.disabled = false;
     }

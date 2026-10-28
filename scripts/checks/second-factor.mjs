@@ -145,6 +145,42 @@ export function checkSecondFactor({ check, ROOT }) {
     }
   });
 
+  check("第二因子：前端异常处理不得吞掉错误", () => {
+    // client.ts 曾用不带绑定的 catch，把网络错误 / 500 / JSON 解析失败
+    // 一律说成"验证被取消"，用户不会重试。
+    for (const rel of ["packages/gateway/src/pages/client.ts", "packages/gateway/src/pages/security-client.ts"]) {
+      const src = read(rel);
+      // 不带绑定的 catch 只有在"静默忽略"时才可接受（例如能力探测）。
+      // 一旦它给用户看提示，就等于把真实原因替换成一个猜测。
+      for (const match of src.matchAll(/\}\s*catch\s*\{([\s\S]{0,400}?)\n\s*\}/g)) {
+        if (/\bhint\s*\(/.test(match[1])) {
+          const line = src.slice(0, match.index).split("\n").length;
+          throw new Error(
+            rel + " 第 " + line + " 行：不绑定异常的 catch 里给用户提示，真实原因会丢失",
+          );
+        }
+      }
+    }
+
+    // Passkey 相关脚本抓到异常必须打日志
+    for (const rel of ["packages/gateway/src/pages/client.ts", "packages/gateway/src/pages/security-client.ts"]) {
+      const src = read(rel);
+      if (!src.includes("console.error")) {
+        throw new Error(rel + " 捕获异常后没有 console.error，线上无从排查");
+      }
+    }
+
+    // 翻译函数必须只有一份
+    const securityClient = read("packages/gateway/src/pages/security-client.ts");
+    if (/function describeWebAuthnException/.test(securityClient)) {
+      throw new Error("security-client.ts 又复制了一份 describeWebAuthnException，应共用 webauthn.ts");
+    }
+    const shared = read("packages/gateway/src/pages/webauthn.ts");
+    if (!shared.includes("export function describeWebAuthnException")) {
+      throw new Error("webauthn.ts 缺少共用的 describeWebAuthnException");
+    }
+  });
+
   check("第二因子：错误 detail 不回传浏览器", () => {
     const mfa = read("packages/core/src/routes/mfa.ts");
 

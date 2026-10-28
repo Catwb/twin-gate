@@ -92,4 +92,86 @@ export function checkCronHygiene({ check, ROOT }) {
       throw new Error("JWKS 输出与清理用的保留常量不一致，会删掉仍在输出的键");
     }
   });
+
+  check("OIDC：sid 必须来自发起授权的会话，不能反查", () => {
+    const routes = read("packages/core/src/routes/oidc.ts");
+
+    const exchange = routes.slice(routes.indexOf('"/token/exchange"'));
+
+    // sid 必须直接取自授权码，不能来自任何查询结果
+    if (!/const sessionId = codeRow\.sessionId;/.test(exchange)) {
+      throw new Error("token/exchange 的 sessionId 不是从授权码取的");
+    }
+    // 不得再出现"取第一条查询结果当 sid"
+    if (/sessionRows\[0\]\.id|sessionRows\[0\]\?\.id/.test(exchange)) {
+      throw new Error("token/exchange 仍在用查询结果当 sid，多浏览器时会指错会话");
+    }
+    // 会话校验必须以 id 为主键，而不是以 user_id 为条件取任意一条
+    if (!/eq\(sessions\.id,\s*sessionId\)/.test(exchange)) {
+      throw new Error("token/exchange 没有按会话 id 校验有效性");
+    }
+
+    // 授权码必须存下 sessionId。schema 定义在 /authorize/prepare 之前，切片要往前多取一段。
+    const authorize = routes.slice(
+      routes.indexOf("const authorizeSchema"),
+      routes.indexOf('"/token/exchange"'),
+    );
+    if (!/sessionId:\s*z\.string\(\)\.min\(1\)/.test(authorize)) {
+      throw new Error("authorizeSchema 没有强制要求 sessionId");
+    }
+    if (!/sessionId:\s*parsed\.data\.sessionId/.test(authorize)) {
+      throw new Error("/authorize/prepare 没有把 sessionId 存进授权码");
+    }
+
+    // 没有 sessionId 的在途码必须拒绝，不能签发 sid: ""
+    if (/sid:\s*sessionId/.test(exchange) && !/if \(!sessionId\)/.test(exchange)) {
+      throw new Error("授权码缺 sessionId 时仍在签发 ID Token，会产生 sid 为空的令牌");
+    }
+
+    // schema 必须真的加了这一列
+    const schema = read("packages/core/src/db/schema.ts");
+    const table = schema.slice(schema.indexOf("authorizationCodes"), schema.indexOf("oidcStates"));
+    if (!/sessionId:\s*text\("session_id"\)/.test(table)) {
+      throw new Error("authorization_codes 表没有 session_id 列");
+    }
+  });
+
+  check("OIDC：密钥与 PKCE 比较必须恒定时间", () => {
+    const svc = read("packages/core/src/services/oidc.ts");
+
+    const client = svc.slice(svc.indexOf("export async function verifyClientSecret"), svc.indexOf("export function parseRedirectUris"));
+    if (/hash\s*!==\s*app\.clientSecretHash/.test(client)) {
+      throw new Error("verifyClientSecret 用了 !== 直接比较");
+    }
+    if (!client.includes("timingSafeEqual")) {
+      throw new Error("verifyClientSecret 没有用 timingSafeEqual");
+    }
+
+    const pkce = svc.slice(svc.indexOf("export async function verifyPkce"));
+    if (/computed\s*===\s*codeChallenge/.test(pkce)) {
+      throw new Error("verifyPkce 用了 === 直接比较");
+    }
+    if (!pkce.slice(0, 600).includes("timingSafeEqual")) {
+      throw new Error("verifyPkce 没有用 timingSafeEqual");
+    }
+  });
+
+  check("OIDC：_headers 覆盖每个构建产物", () => {
+    const pkg = JSON.parse(read("packages/gateway/package.json"));
+    const scripts = pkg.scripts ?? {};
+    const headers = read("packages/gateway/public/_headers");
+
+    const assets = new Set();
+    for (const key of ["build:js", "build:css"]) {
+      for (const m of String(scripts[key] ?? "").matchAll(/--outfile=\S*?\/?assets\/([\w.-]+)/g)) {
+        assets.add(m[1]);
+      }
+    }
+    if (assets.size === 0) throw new Error("未能从构建脚本解析出任何产物");
+
+    const missing = [...assets].filter((name) => !headers.includes("/assets/" + name));
+    if (missing.length > 0) {
+      throw new Error("_headers 漏了: " + missing.join(", "));
+    }
+  });
 }

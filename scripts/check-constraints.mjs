@@ -316,9 +316,14 @@ check("构建：包管理器锁定、Worker 名匹配、产物不入库", () => 
 
 // ============================================================ 12. 公开仓库卫生
 check("公开仓库：不泄露敏感信息", () => {
-  for (const file of ["0001_init.sql", "0002_mfa.sql"]) {
+  for (const file of ["0001_init.sql", "0002_mfa.sql", "0003_authorization_code_session.sql"]) {
     expect(exists(`packages/core/migrations/${file}`), `缺少迁移 ${file}`);
   }
+
+  // 迁移必须走 wrangler 的版本表。用 sqlite3 手工执行过的文件不会被记录，
+  // 下次 apply 会重跑一遍 —— ALTER TABLE 重跑直接失败。
+  const deployWorkflow = read(".github/workflows/deploy.yml");
+  expect(deployWorkflow.includes("d1 migrations apply"), "deploy.yml 未通过 wrangler 应用迁移");
 
   const toml = read("packages/core/wrangler.toml");
   const dbId = toml.match(/database_id\s*=\s*"([^"]*)"/);
