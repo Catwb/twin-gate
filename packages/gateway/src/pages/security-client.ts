@@ -100,7 +100,7 @@ async function registerPasskey(): Promise<void> {
     }
 
     try {
-      const start = await postJson<{ options: Record<string, unknown> }>("/admin/security/passkey/options", {});
+      const start = await postJson<{ options: Record<string, unknown> }>("/account/security/passkey/options", {});
       if (!start.ok || !start.data) {
         hint(start.message ?? "无法开始绑定，请刷新重试");
         return;
@@ -149,7 +149,7 @@ async function registerPasskey(): Promise<void> {
       }
 
       const response = credential.response as AuthenticatorAttestationResponse;
-      const finish = await postJson("/admin/security/passkey/verify", {
+      const finish = await postJson("/account/security/passkey/verify", {
         challenge: options.challenge,
         response: {
           id: credential.id,
@@ -164,7 +164,7 @@ async function registerPasskey(): Promise<void> {
       });
 
       if (finish.ok) {
-        window.location.href = "/admin/security";
+        window.location.href = "/account/security";
         return;
       }
       // 把 Core 的错误码翻译成可操作的提示，
@@ -192,7 +192,7 @@ async function beginTotp(): Promise<void> {
 
   button.addEventListener("click", async () => {
     button.disabled = true;
-    const start = await postJson<{ factorId: string; otpauthUri: string }>("/admin/security/totp/begin", {});
+    const start = await postJson<{ factorId: string; otpauthUri: string }>("/account/security/totp/begin", {});
     if (!start.ok || !start.data) {
       hint("无法开始启用");
       button.disabled = false;
@@ -220,7 +220,7 @@ async function confirmTotp(): Promise<void> {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(form);
-    const result = await postJson<{ recoveryCodes: string[] }>("/admin/security/totp/confirm", {
+    const result = await postJson<{ recoveryCodes: string[] }>("/account/security/totp/confirm", {
       code: String(data.get("code") ?? ""),
     });
 
@@ -230,7 +230,7 @@ async function confirmTotp(): Promise<void> {
     }
 
     // 恢复码只在启用时返回一次，随跳转参数带回页面展示。
-    window.location.href = `/admin/security?totp=on&codes=${encodeURIComponent(
+    window.location.href = `/account/security?totp=on&codes=${encodeURIComponent(
       result.data.recoveryCodes.join(","),
     )}`;
   });
@@ -242,13 +242,13 @@ async function regenerateRecovery(): Promise<void> {
 
   button.addEventListener("click", async () => {
     button.disabled = true;
-    const result = await postJson<{ recoveryCodes: string[] }>("/admin/security/recovery/regenerate", {});
+    const result = await postJson<{ recoveryCodes: string[] }>("/account/security/recovery/regenerate", {});
     if (!result.ok || !result.data) {
       hint(result.message ?? "生成失败");
       button.disabled = false;
       return;
     }
-    window.location.href = `/admin/security?codes=${encodeURIComponent(result.data.recoveryCodes.join(","))}`;
+    window.location.href = `/account/security?codes=${encodeURIComponent(result.data.recoveryCodes.join(","))}`;
   });
 }
 

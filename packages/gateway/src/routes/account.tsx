@@ -208,5 +208,8 @@ accountRoutes.post("/password", async (c) => {
 
   // 与其它端点保持一致：业务数据放在 data 里。
   // 前端统一读 result.data，之前放顶层导致"改密成功却提示失败"。
-  return c.json({ ok: true, data: { redirect: "/admin" } });
+  // 按角色分流：普通用户进 /admin 会撞 requireRole(Role.Admin)。
+  // 与 auth.tsx 登录后的规则保持一致。
+  const redirect = caller.role === "user" ? "/account" : "/admin";
+  return c.json({ ok: true, data: { redirect } });
 });

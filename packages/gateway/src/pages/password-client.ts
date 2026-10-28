@@ -39,7 +39,7 @@ form?.addEventListener("submit", async (event) => {
   setMessage("正在保存…", false);
 
   try {
-    const result = await postJson<{ redirect?: string }>("/admin/account/password", {
+    const result = await postJson<{ redirect?: string }>("/account/password", {
       currentPassword,
       newPassword,
     });

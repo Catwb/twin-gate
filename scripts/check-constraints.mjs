@@ -11,6 +11,7 @@
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
+import { checkFrontendPaths } from "./checks/frontend-paths.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const checks = [];
@@ -381,6 +382,9 @@ check("改密页：GET 与 POST 成对存在", () => {
   expect(account.includes('accountRoutes.post("/password"'), "缺少改密提交 POST");
   expect(account.includes("/user/change-password"), "POST 未调用 Core 的改密方法");
 });
+
+// ============================================================ 16. 前端路径一致性
+checkFrontendPaths({ check, ROOT });
 
 // ============================================================ 输出
 for (const c of checks) {
