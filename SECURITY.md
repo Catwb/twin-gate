@@ -114,7 +114,7 @@
 
 ## 硬约束门禁
 
-仓库自带 `scripts/check-constraints.mjs`，按领域聚合成 32 条不可退让的约束：
+仓库自带 `scripts/check-constraints.mjs`，按领域聚合成 35 条不可退让的约束：
 
 ```bash
 pnpm check       # 只跑门禁

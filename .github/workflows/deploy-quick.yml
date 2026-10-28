@@ -1,9 +1,12 @@
 name: deploy-quick
 
-# 轻量部署：只构建并部署，不复核业务逻辑、不动数据库。
+# 轻量部署：只构建并部署，不跑迁移。
 # 适合「只改了前端 / 页面 / Gateway 路由」的日常更新。
 #
-# 完整的 deploy.yml 保留给：首次部署、改了 Core、需要跑迁移的场景。
+# 完整的 deploy.yml 保留给：首次部署、改了 Core 结构、需要跑迁移的场景。
+#
+# deploy-core 里有一道硬检查：只要 D1 还有未应用的迁移就直接失败，
+# 不会出现「代码是新的、数据库是旧的」这种半吊子状态。
 #
 # 两者的取舍：
 #   deploy-quick  约 2-3 分钟，跑 verify 的快速子集 + 构建 + 部署
@@ -158,6 +161,28 @@ jobs:
             exit 1
           fi
           echo "database_id=$DB_ID" >> "$GITHUB_OUTPUT"
+
+      # 这条是本 workflow 唯一能保证一致性的地方。
+      # 允许 target=core 却不跑迁移，结果就是代码更新了、schema 没跟上 ——
+      # 这类错误在运行时表现为 500，排查成本远高于在这里拦下来。
+      - name: 拒绝在存在未应用迁移时部署
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          cd packages/core
+          OUT=$(pnpm exec wrangler d1 migrations list sso-db --remote 2>&1 || true)
+          echo "$OUT"
+          if echo "$OUT" | grep -q "Migrations to be applied"; then
+            echo "::error::数据库存在未应用的迁移。请改用 deploy workflow 并勾选 run_migrations。"
+            exit 1
+          fi
+          if ! echo "$OUT" | grep -q "No migrations to apply"; then
+            echo "::error::无法确认迁移状态（输出不符合预期），拒绝继续部署。"
+            exit 1
+          fi
+          echo "确认：没有待应用的迁移"
 
       - name: 注入运行时配置
         env:

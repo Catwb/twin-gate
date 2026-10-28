@@ -17,9 +17,10 @@
      ▼
   GitHub Actions
   ├─ verify.yml    自动：类型 + 单测 + 门禁 + 构建
-  └─ deploy.yml    手动：guard → verify → build → resolve-d1
-                          → deploy-core → deploy-gateway → smoke
-     │
+  ├─ deploy.yml     手动：guard → verify → build → resolve-d1
+  │                          → deploy-core → deploy-gateway → smoke
+  └─ deploy-quick.yml  手动：轻量部署（不跑迁移，
+                            有未应用迁移时直接拒绝）
      ▼
   Cloudflare
   ┌──────────────────────────────────────────────┐
@@ -152,7 +153,7 @@ sso/
 ├── packages/
 │   ├── shared/          常量与类型（角色、TTL、分页上限）
 │   ├── core/            ★ 无公网路由，仅 D1 + Cron
-│   │   ├── migrations/  D1 迁移（0001 / 0002_mfa / 0003_authorization_code_session）
+│   │   ├── migrations/  D1 迁移（NNNN_name.sql，编号连续）
 │   │   ├── src/
 │   │   └── wrangler.toml
 │   └── gateway/         ★ 公网入口，仅 Service Binding + Assets
@@ -1025,5 +1026,5 @@ curl https://sso.your-domain.com/.well-known/openid-configuration | grep issuer
 pnpm verify
 ```
 
-包含：类型检查（3 包）+ 单元测试（75 个）+ 硬约束门禁（32 条）。
+包含：类型检查（3 包）+ 单元测试（126 个）+ 硬约束门禁（35 条）。
 CI 里跑这一条即可。

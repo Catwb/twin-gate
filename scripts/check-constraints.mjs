@@ -314,17 +314,103 @@ check("构建：包管理器锁定、Worker 名匹配、产物不入库", () => 
   expect(gi.includes("!packages/core/migrations/*.sql"), "迁移文件被 *.sql 误伤");
 });
 
-// ============================================================ 12. 公开仓库卫生
-check("公开仓库：不泄露敏感信息", () => {
-  for (const file of ["0001_init.sql", "0002_mfa.sql", "0003_authorization_code_session.sql"]) {
-    expect(exists(`packages/core/migrations/${file}`), `缺少迁移 ${file}`);
+// ============================================================ 12. 迁移
+check("迁移：目录扫描、编号连续、与 schema 双向一致", () => {
+  // 曾经这里硬编码了三个文件名。那份清单每加一个迁移就要改一次，
+  // 漏改则门禁对新增文件完全无感 —— 等于没有检查。
+  const migrations = readdirSync(join(ROOT, "packages/core/migrations")).filter((f) =>
+    f.endsWith(".sql"),
+  );
+  expect(migrations.length > 0, "migrations 目录为空");
+  expect(
+    migrations.every((f) => /^\d{4}_[a-z0-9_]+\.sql$/.test(f)),
+    `迁移文件名不符合 NNNN_name.sql: ${migrations.join(", ")}`,
+  );
+
+  // 编号必须连续递增，防止 0005 写在 0004 前面被 wrangler 乱序应用
+  const numbers = migrations.map((f) => Number(f.slice(0, 4))).sort((a, b) => a - b);
+  expect(
+    numbers.every((n, i) => n === i + 1),
+    `迁移编号不连续: ${numbers.join(", ")}`,
+  );
+
+  // schema.ts 里声明的表必须都能在迁移里找到 CREATE TABLE；
+  // 反向也要成立：迁移建了表而 schema 没声明，说明代码已落后于库。
+  const schemaSrc = code("packages/core/src/db/schema.ts");
+  const declared = [...schemaSrc.matchAll(/sqliteTable\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const created = new Set();
+  for (const file of migrations) {
+    for (const m of read(`packages/core/migrations/${file}`).matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z_]+)/g)) {
+      created.add(m[1]);
+    }
   }
+  expect(declared.length > 0, "schema.ts 未解析到任何表");
+  const missingInSql = declared.filter((t) => !created.has(t));
+  expect(missingInSql.length === 0, `schema 声明了但迁移未建表: ${missingInSql.join(", ")}`);
+  const missingInSchema = [...created].filter((t) => !declared.includes(t));
+  expect(missingInSchema.length === 0, `迁移建了表但 schema 未声明: ${missingInSchema.join(", ")}`);
 
   // 迁移必须走 wrangler 的版本表。用 sqlite3 手工执行过的文件不会被记录，
   // 下次 apply 会重跑一遍 —— ALTER TABLE 重跑直接失败。
   const deployWorkflow = read(".github/workflows/deploy.yml");
   expect(deployWorkflow.includes("d1 migrations apply"), "deploy.yml 未通过 wrangler 应用迁移");
 
+  // 文档里不得再列具体迁移文件名：那也是一份会过期的清单。
+  const deployDoc = read("docs/deploy.md");
+  expect(
+    !/0001_init\.sql[^\n]{0,80}0002/.test(deployDoc),
+    "docs/deploy.md 又硬编码了迁移文件清单，加迁移时会过期",
+  );
+});
+
+// ============================================================ 13. 文档与实现一致
+check("文档：统计数字与门禁数量不得过期", () => {
+  // 这两类数字都是手写的，每加一条用例 / 一条门禁就过期一次，
+  // 而没有任何人会因为数字错了而察觉 —— 只能靠门禁自己数。
+  const testFiles = [];
+  const collect = (dir) => {
+    for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) collect(path);
+      else if (/\.test\.tsx?$/.test(entry.name)) testFiles.push(path);
+    }
+  };
+  collect("packages");
+  const actualTests = testFiles.reduce(
+    (sum, file) => sum + (read(file).match(/^\s*it\(/gm) ?? []).length,
+    0,
+  );
+  expect(actualTests > 0, "未统计到任何测试用例");
+
+  const deployDoc = read("docs/deploy.md");
+  const claimedTests = deployDoc.match(/单元测试（(\d+) 个）/)?.[1];
+  if (claimedTests !== undefined) {
+    expect(
+      Number(claimedTests) === actualTests,
+      `docs/deploy.md 写的是 ${claimedTests} 个测试，实际 ${actualTests} 个`,
+    );
+  }
+
+  // 门禁条数：文档写 N 条，实际就必须跑 N 条。
+  // checks.length 在运行期才确定，这里用「文档之间彼此一致」做代理 ——
+  // 四份文档写的数字必须完全相同。
+  const claimed = new Map();
+  for (const file of ["README.md", "SECURITY.md", "CONTRIBUTING.md", "docs/deploy.md"]) {
+    for (const m of read(file).matchAll(/(\d+)\s*条(?:硬约束)?门禁|(\d+)\s*条不可退让的约束/g)) {
+      const n = Number(m[1] ?? m[2]);
+      if (!claimed.has(n)) claimed.set(n, []);
+      claimed.get(n).push(file);
+    }
+  }
+  expect(claimed.size > 0, "文档里未找到门禁条数声明");
+  expect(
+    claimed.size === 1,
+    `文档之间的门禁条数不一致: ${[...claimed.entries()].map(([n, fs]) => `${n} 条(${fs.join(",")})`).join(" / ")}`,
+  );
+});
+
+// ============================================================ 14. 公开仓库卫生
+check("公开仓库：不泄露敏感信息", () => {
   const toml = read("packages/core/wrangler.toml");
   const dbId = toml.match(/database_id\s*=\s*"([^"]*)"/);
   expect(dbId, "缺少 database_id 配置项");
@@ -343,7 +429,7 @@ check("公开仓库：不泄露敏感信息", () => {
   expect(offenders.length === 0, `文档含疑似真实域名: ${[...new Set(offenders)].join(", ")}`);
 });
 
-// ============================================================ 13. Workflow 正确性
+// ============================================================ 15. Workflow 正确性
 check("Workflow：手动部署、离线自校验、参数正确", () => {
   const deploy = read(".github/workflows/deploy.yml");
 
@@ -364,9 +450,32 @@ check("Workflow：手动部署、离线自校验、参数正确", () => {
 
   // 两个 Worker 都要注入 secret
   expect((deploy.match(/secret bulk/g) ?? []).length >= 2, "两个 Worker 都应注入 secret");
+
+  // ---- deploy-quick ----
+  // 它能部署 Core 却不跑迁移。没有守卫的话，改了 Core + 改了 schema
+  // 走 quick 部署会得到「代码新、库旧」的状态，运行时表现为 500。
+  const quick = read(".github/workflows/deploy-quick.yml");
+  expect(quick.includes("workflow_dispatch"), "deploy-quick.yml 必须手动触发");
+  expect(quick.includes("inputs.confirm"), "deploy-quick.yml 缺少 DEPLOY 确认");
+
+  const quickCore = quick.slice(quick.indexOf("deploy-core:"));
+  expect(quickCore.length > 0, "deploy-quick.yml 缺少 deploy-core 作业");
+  expect(
+    quickCore.includes("d1 migrations list"),
+    "deploy-quick 的 deploy-core 没有检查未应用迁移，可能部署出代码新库旧的状态",
+  );
+  expect(
+    quickCore.includes("Migrations to be applied"),
+    "deploy-quick 没有对未应用迁移做拦截",
+  );
+  // 守卫必须在部署之前
+  expect(
+    quickCore.indexOf("d1 migrations list") < quickCore.indexOf("wrangler deploy"),
+    "迁移检查必须在部署之前执行",
+  );
 });
 
-// ============================================================ 14. 种子超管
+// ============================================================ 16. 种子超管
 check("种子超管：幂等、不强制改密", () => {
   const seed = read("scripts/seed-admin-ci.mjs");
   expect(seed.includes("role = 'super_admin'"), "种子脚本缺少已有超管检查");
@@ -381,9 +490,15 @@ check("种子超管：幂等、不强制改密", () => {
   }
 
   expect(read(".github/workflows/deploy.yml").includes("seed-admin-ci.mjs"), "deploy.yml 未调用种子脚本");
+
+  // 「不强制改密」与「强制绑 MFA」是两件不同的事，混成一句话会让人以为互相矛盾。
+  expect(
+    !seed.includes("首次登录会强制绑定 MFA"),
+    "种子脚本把改密与 MFA 混成一句话，容易被读成与 must_change_password=0 冲突",
+  );
 });
 
-// ============================================================ 15. 改密页成对
+// ============================================================ 17. 改密页成对
 check("改密页：GET 与 POST 成对存在", () => {
   const account = code("packages/gateway/src/routes/account.tsx");
   expect(account.includes('accountRoutes.get("/password"'), "缺少改密页 GET");
@@ -391,17 +506,48 @@ check("改密页：GET 与 POST 成对存在", () => {
   expect(account.includes("/user/change-password"), "POST 未调用 Core 的改密方法");
 });
 
-// ============================================================ 16. 前端路径一致性
+// ============================================================ 18. 前端路径一致性
 checkFrontendPaths({ check, ROOT });
 
-// ============================================================ 17. 管理端反馈一致性
+// ============================================================ 19. 管理端反馈一致性
 checkAdminFeedback({ check, ROOT });
 
-// ============================================================ 18. 第二因子防线
+// ============================================================ 20. 第二因子防线
 checkSecondFactor({ check, ROOT });
 
-// ============================================================ 19. Cron 与签名密钥
+// ============================================================ 21. Cron 与签名密钥
 checkCronHygiene({ check, ROOT });
+
+// ============================================================ 文档条数自检（必须是最后一个检查）
+// 必须在所有 check 都注册完之后才能数总数，所以放在这里而不是某个 check 里。
+// 文档里写的「N 条门禁」如果和实际条数不符，说明有人加了门禁却没更新文档 ——
+// 这类数字过期不会有任何症状，只有主动比对才能发现。
+{
+  // +1 是这条自检本身 —— 它也要计入总数，否则文档永远对不上。
+  const actual = checks.length + 1;
+  const mismatched = [];
+  for (const file of ["README.md", "SECURITY.md", "CONTRIBUTING.md", "docs/deploy.md"]) {
+    for (const line of read(file).split("\n")) {
+      // 一行里提到门禁/约束条数时，那个数字必须等于实际条数。
+      // 之前只匹配「N 条门禁」，漏掉了「按领域聚合成 N 条：」这种写法 —— 
+      // 而恰好最常见的一处就是那句话。
+      if (!/门禁|不可退让/.test(line)) continue;
+      for (const m of line.matchAll(/(\d+)\s*条/g)) {
+        const n = Number(m[1]);
+        if (n !== actual) mismatched.push(`${file}: "${line.trim().slice(0, 40)}" 里的 ${n}`);
+      }
+    }
+  }
+  if (mismatched.length > 0) {
+    checks.push({
+      name: "文档：门禁条数与实际一致",
+      ok: false,
+      detail: `实际 ${actual} 条，但 ${mismatched.join("; ")}`,
+    });
+  } else {
+    checks.push({ name: "文档：门禁条数与实际一致", ok: true });
+  }
+}
 
 // ============================================================ 输出
 for (const c of checks) {

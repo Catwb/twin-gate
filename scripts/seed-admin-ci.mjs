@@ -79,8 +79,22 @@ try {
 }
 
 if (existing > 0) {
-  console.log(`[seed] 已有 ${existing} 个 super_admin，跳过创建`);
+  // 这里不过滤 status：被禁用的超管也算数。
+  // 理由是这个脚本的职责是"别重复建号"，不是"保证有人能登录"——
+  // 后者需要人来看一眼，不该由一个幂等脚本擅自决定。
+  console.log(`[seed] 已有 ${existing} 个 super_admin（含已禁用的），跳过创建`);
   console.log("created=false");
+  // 附加诊断查询失败不该影响"跳过"这个结论，单独兜住。
+  try {
+    const disabled = queryCount(
+      "SELECT COUNT(*) AS n FROM users WHERE role = 'super_admin' AND status = 'disabled'",
+    );
+    if (disabled > 0) {
+      console.log(`[seed] 注意：其中 ${disabled} 个处于禁用状态。若无人可登录，请手工启用一个。`);
+    }
+  } catch {
+    // 只是提醒，不必因此失败
+  }
   process.exit(0);
 }
 
@@ -118,4 +132,8 @@ try {
 console.log(`[seed] 已创建超管：${normalizedEmail}`);
 console.log("created=true");
 console.log(`userId=${id}`);
-console.log("首次登录会强制绑定 MFA。");
+// 两件事分清楚，别写成一句让人误会：
+//   密码不强制改 —— 它是部署者在 GitHub Secrets 里自己设的，不是系统生成的临时口令。
+//   MFA 强制绑 —— 但只在访问 /admin 时才拦（见 mfaGate）。
+console.log("密码不会被强制修改（由部署者自行设定）。");
+console.log("首次访问 /admin 前必须绑定 MFA，否则会被拦在 /account/security。");
