@@ -12,6 +12,7 @@ import {
   rateLimits,
   sessions,
 } from "./db/schema";
+import { pruneRetiredKeys } from "./services/signingKeys";
 import { nowSeconds } from "./lib/time";
 
 /**
@@ -70,6 +71,10 @@ export async function runCleanup(db: Db): Promise<CleanupReport> {
       LIMIT ${CRON_DELETE_BATCH}
     )`,
   );
+
+  // signing_keys 只增不减：每轮换一次净增一行，超出的退役公钥不会被任何人读到
+  // （buildJwks 只输出 RETAINED_RETIRED_KEYS 把）。这张表很小，不必分批。
+  report.signingKeys = await pruneRetiredKeys(db);
 
   // passkey_challenges 必须在 cron 里清：
   // 免用户名登录时 user_id 为 NULL，lazyCleanupChallenges 按 user_id 过滤，

@@ -5,7 +5,7 @@ import { internalRoutes } from "./routes/internal";
 import { oidcRoutes } from "./routes/oidc";
 import { mfaRoutes } from "./routes/mfa";
 import { runCleanup } from "./cron";
-import { parseKeySet, syncSigningKeys } from "./services/signingKeys";
+import { parseKeySet, pruneRetiredKeys, syncSigningKeys } from "./services/signingKeys";
 import type { Env } from "./types";
 
 type Variables = { db: ReturnType<typeof getDb> };
@@ -44,14 +44,21 @@ export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     const db = getDb(env.DB);
 
-    // 每次 cron 顺便把 secret 里的密钥同步进 D1（幂等），
-    // 保证新增 kid 后 JWKS 自动可查，不需要额外的部署步骤。
+    // 密钥同步与清理都放进 waitUntil：
+    // 两者都不是"必须在本轮返回前完成"的工作，串行 await 只会挤占 10ms CPU 预算，
+    // 把真正要紧的清理拖到被截断。稳态下同步只做 1 次 SELECT、0 次写入。
     if (env.SIGNING_KEYS_JSON) {
-      try {
-        await syncSigningKeys(db, parseKeySet(env.SIGNING_KEYS_JSON));
-      } catch (err) {
-        console.error("signing key sync failed", err instanceof Error ? err.message : err);
-      }
+      ctx.waitUntil(
+        syncSigningKeys(db, parseKeySet(env.SIGNING_KEYS_JSON))
+          .then(async (changed) => {
+            if (changed > 0) {
+              // 有变化才可能产生多余的退役公钥，没变化就不用再查一次
+              await pruneRetiredKeys(db);
+              console.log("signing keys synced", changed);
+            }
+          })
+          .catch((err) => console.error("signing key sync failed", err instanceof Error ? err.message : err)),
+      );
     }
 
     ctx.waitUntil(

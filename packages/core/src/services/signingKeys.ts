@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { signingKeys } from "../db/schema";
 import type { Jwk, SigningKeyMaterial } from "../lib/jwt";
@@ -47,32 +47,89 @@ export function activeKey(set: KeySet): SigningKeyMaterial {
 }
 
 /**
- * 把 secret 里的密钥同步进 D1。
- * D1 只保留公钥，私钥永远不进库。
+ * 计算「要让 D1 与 secret 一致，需要做哪些写入」。
+ *
+ * 抽成纯函数有两个理由：
+ *   1. 稳态下必须返回空数组 —— 之前的实现每轮无条件 UPDATE 每把钥匙，
+ *      96 tick/天 × 2 把 = 192 行写入，全都写的是同一个值。
+ *   2. 没有 D1 也能测。这段逻辑以前一行测试都没有。
  */
-export async function syncSigningKeys(db: Db, set: KeySet): Promise<void> {
-  const now = nowSeconds();
-  const existing = await db.select().from(signingKeys);
-  const known = new Set(existing.map((row) => row.kid));
+export type KeyChange =
+  | { kind: "insert"; kid: string; alg: string; publicJwk: string; status: "active" | "retired"; retiredAt: number | null }
+  | { kind: "update"; kid: string; status: "active" | "retired"; retiredAt: number | null };
+
+export function planKeyChanges(
+  existing: { kid: string; status: string; retiredAt: number | null }[],
+  set: KeySet,
+  now: number,
+): KeyChange[] {
+  const byKid = new Map(existing.map((row) => [row.kid, row]));
+  const changes: KeyChange[] = [];
 
   for (const [index, key] of set.keys.entries()) {
+    const status = index === 0 ? "active" : "retired";
     const publicJwk = JSON.stringify(toPublicJwk(key.private_jwk, key.kid));
-    if (!known.has(key.kid)) {
-      await db.insert(signingKeys).values({
+    const current = byKid.get(key.kid);
+
+    if (!current) {
+      changes.push({
+        kind: "insert",
         kid: key.kid,
         alg: key.alg,
         publicJwk,
-        status: index === 0 ? "active" : "retired",
-        createdAt: now,
-        retiredAt: index === 0 ? null : now,
+        status,
+        retiredAt: status === "active" ? null : now,
       });
-    } else {
-      await db
-        .update(signingKeys)
-        .set({ status: index === 0 ? "active" : "retired" })
-        .where(eq(signingKeys.kid, key.kid));
+      continue;
+    }
+
+    // 只在真的需要变时才写：
+    //   - status 变了（密钥晋升 / 降级）
+    //   - retiredAt 与 status 不自洽（历史数据里 retired 的键 retiredAt 是 NULL）
+    const wantRetiredAt = status === "retired" ? current.retiredAt ?? now : null;
+    const statusChanged = current.status !== status;
+    const retiredAtChanged = current.retiredAt !== wantRetiredAt;
+
+    if (statusChanged || retiredAtChanged) {
+      changes.push({ kind: "update", kid: key.kid, status, retiredAt: wantRetiredAt });
     }
   }
+
+  return changes;
+}
+
+/**
+ * 把 secret 里的密钥同步进 D1。
+ * D1 只保留公钥，私钥永远不进库。
+ *
+ * 稳态下这里只做一次 SELECT、零次写入；有变化时合并成一次 batch
+ * （D1 的 batch 是单事务、单次往返）。
+ */
+export async function syncSigningKeys(db: Db, set: KeySet): Promise<number> {
+  const now = nowSeconds();
+  const existing = await db.select().from(signingKeys);
+  const changes = planKeyChanges(existing, set, now);
+  if (changes.length === 0) return 0;
+
+  const statements = changes.map((change) => {
+    if (change.kind === "insert") {
+      return db.insert(signingKeys).values({
+        kid: change.kid,
+        alg: change.alg,
+        publicJwk: change.publicJwk,
+        status: change.status,
+        createdAt: now,
+        retiredAt: change.retiredAt,
+      });
+    }
+    return db
+      .update(signingKeys)
+      .set({ status: change.status, retiredAt: change.retiredAt })
+      .where(eq(signingKeys.kid, change.kid));
+  });
+
+  await db.batch(statements as [(typeof statements)[number], ...(typeof statements)[number][]]);
+  return changes.length;
 }
 
 /**
@@ -110,6 +167,33 @@ export async function buildJwks(db: Db, signingKeysJson?: string): Promise<{ key
   });
 
   return { keys };
+}
+
+/**
+ * 只保留最近 RETAINED_RETIRED_KEYS 把退役公钥。
+ *
+ * buildJwks 本来就只输出这么多，多出来的行永远不会被任何人读到，
+ * 却会一直躺在表里。删除条件与 buildJwks 的保留条件必须一致。
+ */
+export async function pruneRetiredKeys(db: Db): Promise<number> {
+  const keep = await db
+    .select({ kid: signingKeys.kid })
+    .from(signingKeys)
+    .where(eq(signingKeys.status, "retired"))
+    .orderBy(desc(signingKeys.createdAt))
+    .limit(RETAINED_RETIRED_KEYS);
+
+  const kept = new Set(keep.map((row) => row.kid));
+  const retired = await db
+    .select({ kid: signingKeys.kid })
+    .from(signingKeys)
+    .where(eq(signingKeys.status, "retired"));
+
+  const stale = retired.map((row) => row.kid).filter((kid) => !kept.has(kid));
+  if (stale.length === 0) return 0;
+
+  await db.delete(signingKeys).where(inArray(signingKeys.kid, stale));
+  return stale.length;
 }
 
 export async function listSigningKeys(db: Db) {

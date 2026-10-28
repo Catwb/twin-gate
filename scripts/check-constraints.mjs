@@ -14,6 +14,7 @@ import { join, resolve, relative } from "node:path";
 import { checkFrontendPaths } from "./checks/frontend-paths.mjs";
 import { checkAdminFeedback } from "./checks/admin-feedback.mjs";
 import { checkSecondFactor } from "./checks/second-factor.mjs";
+import { checkCronHygiene } from "./checks/cron-hygiene.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const checks = [];
@@ -393,6 +394,9 @@ checkAdminFeedback({ check, ROOT });
 
 // ============================================================ 18. 第二因子防线
 checkSecondFactor({ check, ROOT });
+
+// ============================================================ 19. Cron 与签名密钥
+checkCronHygiene({ check, ROOT });
 
 // ============================================================ 输出
 for (const c of checks) {
