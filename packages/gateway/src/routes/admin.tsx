@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { PAGE_SIZE, Role } from "@sso/shared";
 import { callCore } from "../core/callCore";
 import { requireAuth, requireRole } from "../middleware/session";
@@ -85,11 +86,20 @@ adminRoutes.get("/users", requireRole(Role.Admin), async (c) => {
   );
 });
 
-adminRoutes.get("/invites", requireRole(Role.Admin), async (c) => {
+type InvitesNotice = {
+  /** 刚生成 / 撤销的邀请码明文。只存在于本次响应体，不进 URL。 */
+  createdCode?: string;
+  createdRole?: string;
+  done?: string;
+  error?: string;
+};
+
+/** 渲染邀请页。POST 处理完直接调它，避免把邀请码放进 URL。 */
+async function renderInvitesPage(c: Context<AppContext>, notice: InvitesNotice = {}) {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
-  const createdCode = c.req.query("created");
-  const done = c.req.query("done");
-  const errorMessage = c.req.query("error");
+  const createdCode = notice.createdCode;
+  const done = notice.done ?? c.req.query("done");
+  const errorMessage = notice.error ?? c.req.query("error");
   const result = await callCore<{ ok: boolean; invitations: InvitationRow[] }>(c.env, {
     method: "POST",
     path: "/invite/list",
@@ -162,7 +172,9 @@ adminRoutes.get("/invites", requireRole(Role.Admin), async (c) => {
       <Pager base="/admin/invites" offset={offset} pageSize={PAGE_SIZE} hasNext={invitations.length === PAGE_SIZE} />
     </AdminLayout>,
   );
-});
+}
+
+adminRoutes.get("/invites", requireRole(Role.Admin), async (c) => renderInvitesPage(c));
 
 adminRoutes.get("/audit", requireRole(Role.Admin), async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
@@ -342,9 +354,9 @@ adminRoutes.post("/invites/create", requireRole(Role.Admin), async (c) => {
     return c.redirect("/admin/invites?error=" + encodeURIComponent("生成失败"), 303);
   }
 
-  // 明文邀请码只显示这一次，用查询参数带回页面
-  const params = new URLSearchParams({ created: result.data.code, role });
-  return c.redirect(`/admin/invites?${params.toString()}`, 303);
+  // 明文邀请码只显示这一次。直接渲染结果页，不走 303 + 查询串 ——
+  // 邀请码进 URL 会留在浏览器历史、Referer 与边缘日志里。
+  return renderInvitesPage(c, { createdCode: result.data.code, createdRole: role });
 });
 
 adminRoutes.post("/invites/revoke", requireRole(Role.Admin), async (c) => {
@@ -359,7 +371,7 @@ adminRoutes.post("/invites/revoke", requireRole(Role.Admin), async (c) => {
   });
 
   if (!result.ok) {
-    return c.redirect("/admin/invites?error=" + encodeURIComponent("撤销失败"), 303);
+    return renderInvitesPage(c, { error: "撤销失败" });
   }
-  return c.redirect("/admin/invites?done=" + encodeURIComponent("已撤销"), 303);
+  return renderInvitesPage(c, { done: "已撤销" });
 });

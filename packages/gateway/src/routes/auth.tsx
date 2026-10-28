@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { SESSION_COOKIE, SessionStatus, TTL, Role } from "@sso/shared";
 import { callCore } from "../core/callCore";
-import { clearSessionCookie, setSessionCookie } from "../middleware/session";
+import { clearSessionCookie, getSessionCaller, setSessionCookie } from "../middleware/session";
 import { LoginPage } from "../pages/login";
 import type { AppContext } from "../types";
 
@@ -82,14 +82,18 @@ authRoutes.post("/login", async (c) => {
 });
 
 authRoutes.post("/logout", async (c) => {
-  const sessionId = c.get("sessionId");
-  if (sessionId) {
+  // /auth 路由组没有挂 requireAuth（登录页本身要匿名可达），
+  // 所以 c.get("sessionId") 在这里恒为 undefined —— 之前就靠它判断，
+  // 结果服务端会话从来没被吊销过，只清了 Cookie，旧令牌还能用满 7 天。
+  // 必须自己从 Cookie 反查一次会话。
+  const session = await getSessionCaller(c);
+  if (session) {
     // best-effort：登出必须无条件成功，吊销失败也只能清 Cookie。
     await callCore(c.env, {
       method: "POST",
       path: "/session/revoke",
-      caller: c.get("caller"),
-      payload: { sessionId, reason: "logout" },
+      caller: { userId: session.userId, role: session.role },
+      payload: { sessionId: session.sessionId, reason: "logout" },
     });
   }
   clearSessionCookie(c);

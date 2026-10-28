@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { Role } from "@sso/shared";
 import { callCore } from "../core/callCore";
 import { mfaGate } from "../middleware/mfaGate";
@@ -13,7 +14,17 @@ securityRoutes.use("*", requireAuth);
 // 超管未绑定 MFA 前不得进入，只能去 /admin/security。
 securityRoutes.use("*", mfaGate);
 
-securityRoutes.get("/security", async (c) => {
+/**
+ * 渲染安全页。
+ *
+ * 恢复码只在刚生成的那一次响应体里出现，不经 URL 中转 ——
+ * 拼进查询串会留在浏览器历史、Referer 与边缘访问日志里，
+ * 而恢复码能直接绕过第二因子接管账号。
+ */
+export async function renderSecurityPage(
+  c: Context<AppContext>,
+  notice: { freshCodes?: string[]; justEnabled?: boolean } = {},
+) {
   const caller = c.get("caller")!;
   const result = await callCore<{
     ok: boolean;
@@ -28,8 +39,8 @@ securityRoutes.get("/security", async (c) => {
   });
 
   const status = result.ok ? result.data : { totp: false, passkey: false, recoveryCodesRemaining: 0 };
-  const freshCodes = c.req.query("codes");
-  const justEnabled = c.req.query("totp") === "on";
+  const freshCodes = notice.freshCodes;
+  const justEnabled = notice.justEnabled ?? false;
 
   return c.html(
     <AdminLayout title="安全" current="/account/security" role={caller.role}
@@ -38,7 +49,7 @@ securityRoutes.get("/security", async (c) => {
         <div class="alert alert-info">
           <strong>恢复码（只显示这一次，请立即保存）</strong>
           <ul class="code-list">
-            {freshCodes.split(",").map((code) => (
+            {freshCodes.map((code) => (
               <li class="mono">{code}</li>
             ))}
           </ul>
@@ -119,7 +130,9 @@ securityRoutes.get("/security", async (c) => {
       </p>
     </AdminLayout>,
   );
-});
+}
+
+securityRoutes.get("/security", async (c) => renderSecurityPage(c));
 
 securityRoutes.get("/roles", requireRole(Role.SuperAdmin), async (c) => {
   return c.html(

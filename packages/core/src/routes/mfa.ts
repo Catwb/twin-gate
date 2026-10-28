@@ -11,6 +11,7 @@ import {
   rotateSessionToken,
 } from "../services/session";
 import { findUserById, markLogin } from "../services/users";
+import { verifyPassword } from "../services/password";
 import { createTotpFactor, hasTotpFactor, persistTotpFactor, verifyTotp } from "../services/totp";
 import {
   buildRegistrationOptions,
@@ -27,12 +28,10 @@ import {
 } from "../services/recovery";
 import { buildAuthenticationOptionsForUser } from "../services/passkeyAuth";
 import {
-  checkPasskeyIpAllowed,
-  checkSecondFactorAllowed,
   clearPasskeyIpFailures,
   clearSecondFactorFailures,
-  recordPasskeyIpFailure,
-  recordSecondFactorFailure,
+  tryPasskeyIp,
+  trySecondFactor,
 } from "../services/rateLimit";
 import { deriveRpId, normalizeOrigin } from "../lib/webauthn-config";
 import { uuid } from "../lib/crypto";
@@ -59,6 +58,43 @@ function payloadOf(body: unknown): unknown {
 function callerOf(body: unknown) {
   const parsed = envelopeSchema.safeParse(body);
   return parsed.success ? parsed.data.caller ?? null : null;
+}
+
+/** step-up 用的当前密码，从 payload 里取。 */
+function currentPasswordOf(body: unknown): string | undefined {
+  const payload = payloadOf(body);
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { currentPassword?: unknown }).currentPassword;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * 敏感操作（绑定新因子 / 换发恢复码）前的再认证。
+ *
+ * 一次会话泄露不该等于永久账号接管：不校验当前密码的话，
+ * 拿到任意 active 会话的人就能绑一把自己的 Passkey，之后走免密登录，
+ * 而且改密也删不掉它。这里是唯一能挡住那条升级路径的地方。
+ *
+ * 首次绑定（此前没有任何第二因子）不要求密码 —— 那时账号本来就只有密码这一道。
+ */
+async function requirePasswordWhenEnrolled(
+  db: ReturnType<typeof getDb>,
+  c: { env: Env },
+  params: { userId: string; currentPassword?: string },
+): Promise<{ ok: true } | { ok: false; code: string }> {
+  const enrolled = await hasActiveFactor(db, params.userId);
+  if (!enrolled) return { ok: true };
+  if (!params.currentPassword) return { ok: false, code: "password_required" };
+
+  const user = await findUserById(db, params.userId);
+  if (!user) return { ok: false, code: "unauthorized" };
+  const ok = await verifyPassword(c.env.SESSION_PEPPER, params.currentPassword, user.passwordHash);
+  return ok ? { ok: true } : { ok: false, code: "invalid_credentials" };
+}
+
+async function hasActiveFactor(db: ReturnType<typeof getDb>, userId: string): Promise<boolean> {
+  const [totp, passkey] = await Promise.all([hasTotpFactor(db, userId), hasPasskey(db, userId)]);
+  return totp || passkey;
 }
 
 /**
@@ -110,6 +146,14 @@ mfaRoutes.post("/mfa/totp/begin", async (c) => {
   const caller = callerOf(body);
   if (!caller) return c.json({ ok: false, code: "unauthorized" }, 401);
 
+  // 已绑定其它因子时，再绑一把需要重新输入当前密码。
+  // 否则一次会话泄露就能挂上攻击者自己的验证器。
+  const guard = await requirePasswordWhenEnrolled(db, c, {
+    userId: caller.userId,
+    currentPassword: currentPasswordOf(body),
+  });
+  if (!guard.ok) return c.json({ ok: false, code: guard.code }, guard.code === "password_required" ? 400 : 401);
+
   const user = await findUserById(db, caller.userId);
   if (!user) return c.json({ ok: false, code: "unauthorized" }, 401);
 
@@ -142,10 +186,10 @@ mfaRoutes.post("/mfa/totp/confirm", async (c) => {
   const caller = callerOf(body);
   if (!caller) return c.json({ ok: false, code: "unauthorized" }, 401);
 
-  // factorId 可选：启用流程天然只有一个待确认因子，
-  // 但保留它以便将来支持多因子时精确定位。
+  // factorId 必填：这是「验的是哪一把、激活的就是哪一把」的唯一依据。
+  // 旧实现收了这个参数却从没用过，激活时按 userId 批量把全部 pending 置 active。
   const parsed = z
-    .object({ factorId: z.string().min(1).optional(), code: z.string().min(6).max(10) })
+    .object({ factorId: z.string().min(1), code: z.string().min(6).max(10) })
     .safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
 
@@ -153,6 +197,7 @@ mfaRoutes.post("/mfa/totp/confirm", async (c) => {
     userId: caller.userId,
     code: parsed.data.code,
     masterKey: c.env.TOTP_MASTER_KEY,
+    factorId: parsed.data.factorId,
   });
 
   if (!result.ok) {
@@ -165,7 +210,7 @@ mfaRoutes.post("/mfa/totp/confirm", async (c) => {
     return c.json({ ok: false, code: result.reason, message }, 400);
   }
 
-  await activateTotpFactor(db, caller.userId);
+  await activateTotpFactor(db, parsed.data.factorId);
   // 绑定成功说明人是本人，之前累积的失败计数应当清零。
   await clearSecondFactorFailures(db, caller.userId);
   const recovery = await generateRecoveryCodes(db, caller.userId);
@@ -204,8 +249,8 @@ mfaRoutes.post("/mfa/verify-totp", async (c) => {
   });
   if (!bound) return c.json({ ok: false, code: "unauthorized" }, 401);
 
-  // 6 位数字只有 100 万种可能。不限流的话，第二因子就等于没有。
-  if (!(await checkSecondFactorAllowed(db, parsed.data.userId))) {
+  // 6 位数字只有 100 万种可能。原子占位后看结果，不给并发留绕过窗口。
+  if (!(await trySecondFactor(db, parsed.data.userId))) {
     await safeAudit(db, {
       action: "mfa_locked",
       actorUserId: parsed.data.userId,
@@ -222,7 +267,7 @@ mfaRoutes.post("/mfa/verify-totp", async (c) => {
   });
 
   if (!result.ok) {
-    await recordSecondFactorFailure(db, parsed.data.userId);
+    // 计数已在准入时原子完成，这里只需要审计。
     await safeAudit(db, {
       action: "mfa_verify_failed",
       actorUserId: parsed.data.userId,
@@ -258,6 +303,13 @@ mfaRoutes.post("/mfa/recovery/regenerate", async (c) => {
   const body = await c.req.json().catch(() => null);
   const caller = callerOf(body);
   if (!caller) return c.json({ ok: false, code: "unauthorized" }, 401);
+
+  // 换发恢复码 = 作废用户手上已保存的那套，必须再认证。
+  const guard = await requirePasswordWhenEnrolled(db, c, {
+    userId: caller.userId,
+    currentPassword: currentPasswordOf(body),
+  });
+  if (!guard.ok) return c.json({ ok: false, code: guard.code }, guard.code === "password_required" ? 400 : 401);
 
   // 只有已启用 MFA 的账号才需要恢复码。
   const hasTotp = await hasTotpFactor(db, caller.userId);
@@ -297,7 +349,7 @@ mfaRoutes.post("/mfa/verify-recovery", async (c) => {
 
   // 与 TOTP 共用同一个账号桶：换验证方式不能重置计数。
   const ip = c.req.header("x-caller-ip") ?? null;
-  if (!(await checkSecondFactorAllowed(db, parsed.data.userId))) {
+  if (!(await trySecondFactor(db, parsed.data.userId))) {
     await safeAudit(db, {
       action: "mfa_locked",
       actorUserId: parsed.data.userId,
@@ -309,7 +361,6 @@ mfaRoutes.post("/mfa/verify-recovery", async (c) => {
 
   const result = await consumeRecoveryCode(db, { userId: parsed.data.userId, code: parsed.data.code });
   if (!result.ok) {
-    await recordSecondFactorFailure(db, parsed.data.userId);
     await safeAudit(db, {
       action: "mfa_verify_failed",
       actorUserId: parsed.data.userId,
@@ -381,6 +432,13 @@ mfaRoutes.post("/passkey/register-options", async (c) => {
   const body = await c.req.json().catch(() => null);
   const caller = callerOf(body);
   if (!caller) return c.json({ ok: false, code: "unauthorized" }, 401);
+
+  // 新增 Passkey 是「挂一把新的免密钥匙」，必须再认证。
+  const guard = await requirePasswordWhenEnrolled(db, c, {
+    userId: caller.userId,
+    currentPassword: currentPasswordOf(body),
+  });
+  if (!guard.ok) return c.json({ ok: false, code: guard.code }, guard.code === "password_required" ? 400 : 401);
 
   const user = await findUserById(db, caller.userId);
   if (!user) return c.json({ ok: false, code: "unauthorized" }, 401);
@@ -462,7 +520,7 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
   // 认证前还没有身份上下文，只能按 IP 限。这条路径是免密的，
   // 不限流就等于给所有凭证一个免费的爆破台。
   const ip = parsed.data.ip ?? "0.0.0.0";
-  if (!(await checkPasskeyIpAllowed(db, ip))) {
+  if (!(await tryPasskeyIp(db, ip))) {
     await safeAudit(db, { action: "mfa_locked", ip, meta: { method: "passkey" } });
     return c.json({ ok: false, code: "locked" }, 429);
   }
@@ -475,7 +533,6 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
   });
 
   if (!result.ok) {
-    await recordPasskeyIpFailure(db, ip);
     await safeAudit(db, {
       action: "mfa_verify_failed",
       ip,
@@ -580,13 +637,20 @@ async function persistTotpFactorPending(
   });
 }
 
-async function activateTotpFactor(db: ReturnType<typeof getDb>, userId: string): Promise<void> {
+/**
+ * 激活**指定的那一个** pending 因子。
+ *
+ * 旧实现按 userId 把该用户全部 pending 因子批量置为 active ——
+ * 只要有一个是别人留下的（比如重置 MFA 前用泄漏会话 begin 出来的），
+ * 它就会在从未被验证的情况下被当成受信第二因子。
+ */
+async function activateTotpFactor(db: ReturnType<typeof getDb>, factorId: string): Promise<void> {
   const { mfaFactors } = await import("../db/schema");
   const { and, eq } = await import("drizzle-orm");
   await db
     .update(mfaFactors)
     .set({ status: "active", verifiedAt: Math.floor(Date.now() / 1000) })
-    .where(and(eq(mfaFactors.userId, userId), eq(mfaFactors.factorType, "totp"), eq(mfaFactors.status, "pending")));
+    .where(and(eq(mfaFactors.id, factorId), eq(mfaFactors.status, "pending")));
 }
 
 export { uuid, hasTotpFactor };

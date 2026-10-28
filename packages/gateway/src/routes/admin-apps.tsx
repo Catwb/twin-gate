@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { PAGE_SIZE, Role } from "@sso/shared";
 import { callCore } from "../core/callCore";
 import { mfaGate } from "../middleware/mfaGate";
@@ -55,11 +56,13 @@ adminAppsRoutes.post("/apps/create", requireRole(Role.SuperAdmin), async (c) => 
     return c.redirect("/admin/apps?error=" + encodeURIComponent("创建失败"), 303);
   }
 
-  const params = new URLSearchParams({
-    created: result.data.clientId,
-    secret: result.data.clientSecret,
+  // 直接渲染结果页，不走 303 + 查询串。
+  // 把 client_secret 拼进 Location 会让它长期留在浏览器历史、Referer
+  // 和 Cloudflare 边缘访问日志里 —— 与「只显示一次」的设计矛盾。
+  return renderAppsPage(c, {
+    createdSecret: result.data.clientSecret,
+    createdTitle: "客户端已创建",
   });
-  return c.redirect(`/admin/apps?${params.toString()}`, 303);
 });
 
 /** 轮换 secret —— 旧值立刻失效，下游必须立刻更新。 */
@@ -76,8 +79,11 @@ adminAppsRoutes.post("/apps/rotate", requireRole(Role.SuperAdmin), async (c) => 
 
   if (!result.ok) return c.redirect("/admin/apps?error=" + encodeURIComponent("轮换失败"), 303);
 
-  const params = new URLSearchParams({ rotated: clientId, secret: result.data.clientSecret });
-  return c.redirect(`/admin/apps?${params.toString()}`, 303);
+  // 同上：密钥只出现在这一次响应体里，不进 URL。
+  return renderAppsPage(c, {
+    createdSecret: result.data.clientSecret,
+    createdTitle: "新密钥已生成，旧密钥立即失效",
+  });
 });
 
 /** 删除客户端 —— 连带它签出的授权码与令牌在过期后自然失效。 */
@@ -100,7 +106,22 @@ adminAppsRoutes.post("/apps/delete", requireRole(Role.SuperAdmin), async (c) => 
   return c.redirect("/admin/apps?deleted=" + encodeURIComponent(clientId), 303);
 });
 
-adminAppsRoutes.get("/apps", requireRole(Role.Admin), async (c) => {
+type AppsNotice = {
+  /** 刚生成 / 轮换出来的密钥。只存在于本次响应体，不进 URL。 */
+  createdSecret?: string;
+  createdTitle?: string;
+  error?: string;
+  deleted?: string;
+};
+
+/**
+ * 渲染应用与密钥页。
+ *
+ * POST 处理完直接调它，而不是 303 跳转带查询串 ——
+ * 把 client_secret 放进 Location 会让它长期留在浏览器历史、
+ * Referer 和边缘访问日志里，与「只显示一次」的设计矛盾。
+ */
+async function renderAppsPage(c: Context<AppContext>, notice: AppsNotice = {}) {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
   const [appsResult, keysResult] = await Promise.all([
     callCore<{ ok: boolean; apps: AppRow[] }>(c.env, {
@@ -119,11 +140,11 @@ adminAppsRoutes.get("/apps", requireRole(Role.Admin), async (c) => {
 
   const apps = appsResult.ok ? appsResult.data.apps : [];
   const keys = keysResult.ok ? keysResult.data.keys : [];
-  const created = c.req.query("created");
-  const rotated = c.req.query("rotated");
-  const secret = c.req.query("secret");
-  const errorMessage = c.req.query("error");
-  const deleted = c.req.query("deleted");
+  // 只有 error / deleted 允许经 URL 传递（不含敏感信息）；
+  // secret 一律来自 notice，即本次 POST 的响应体。
+  const errorMessage = notice.error ?? c.req.query("error");
+  const deleted = notice.deleted ?? c.req.query("deleted");
+  const secret = notice.createdSecret;
   const isSuperAdmin = c.get("caller")?.role === "super_admin";
 
   return c.html(
@@ -132,7 +153,7 @@ adminAppsRoutes.get("/apps", requireRole(Role.Admin), async (c) => {
       {deleted ? <p class="alert alert-info">已删除客户端 {deleted}</p> : null}
       {secret ? (
         <div class="alert alert-info">
-          <strong>{rotated ? "新密钥已生成，旧密钥立即失效" : "客户端已创建"}</strong>
+          <strong>{notice.createdTitle ?? "客户端已创建"}</strong>
           <p class="hint">密钥只显示这一次，请立即保存：</p>
           <p class="mono secret-box">{secret}</p>
         </div>
@@ -227,7 +248,9 @@ adminAppsRoutes.get("/apps", requireRole(Role.Admin), async (c) => {
       </p>
     </AdminLayout>,
   );
-});
+}
+
+adminAppsRoutes.get("/apps", requireRole(Role.Admin), async (c) => renderAppsPage(c));
 
 adminAppsRoutes.get("/sessions", requireRole(Role.Admin), async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);

@@ -7,11 +7,9 @@ import { getDb } from "../db/client";
 import { safeAudit } from "../services/audit";
 import { checkPasswordPolicy, dummyVerify, makePasswordHash, verifyPassword } from "../services/password";
 import {
-  checkInviteIpAllowed,
-  checkLoginAllowed,
   clearLoginFailures,
-  recordInviteIpFailure,
-  recordLoginFailure,
+  tryInviteIp,
+  tryLogin,
 } from "../services/rateLimit";
 import {
   createSession,
@@ -33,6 +31,8 @@ import {
   setUserStatus,
 } from "../services/users";
 import { consumeInvitation, createInvitation, listInvitations, revokeInvitation } from "../services/invitations";
+import { hasTotpFactor } from "../services/totp";
+import { hasPasskey } from "../services/passkey";
 import { uuid } from "../lib/crypto";
 
 /**
@@ -84,23 +84,28 @@ internalRoutes.post("/auth/login", async (c) => {
   const email = parsed.email.toLowerCase();
   const ip = (c.req.header("x-caller-ip") ?? "0.0.0.0").slice(0, 64);
 
-  if (!(await checkLoginAllowed(db, email, ip))) {
-    await safeAudit(db, { action: "login_locked", target: email, ip });
+  // 原子占位：这次尝试本身就计入配额，之后不再有「判定与记录分离」的窗口。
+  const gate = await tryLogin(db, email, ip);
+  // IP 维度超限才拒绝 —— 这是挡住爆破的那道。
+  // 账号维度只作信号：让攻击者锁死某个账号（包括唯一超管）是比爆破更糟的结果。
+  if (gate.ipBlocked) {
+    await safeAudit(db, { action: "login_locked", target: email, ip, meta: { scope: "ip" } });
     return c.json({ ok: false, code: "locked" }, 429);
+  }
+  if (gate.accountLocked) {
+    await safeAudit(db, { action: "login_account_throttled", target: email, ip });
   }
 
   const user = await findUserByEmail(db, email);
   if (!user) {
     // 用户不存在时也走一次完整 HMAC，保持耗时一致，防止用户名枚举。
     await dummyVerify(c.env.SESSION_PEPPER, parsed.password);
-    await recordLoginFailure(db, email, ip);
     await safeAudit(db, { action: "login_failed", target: email, ip, meta: { reason: "no_user" } });
     return c.json({ ok: false, code: "invalid_credentials" }, 401);
   }
 
   const passwordOk = await verifyPassword(c.env.SESSION_PEPPER, parsed.password, user.passwordHash);
   if (!passwordOk) {
-    await recordLoginFailure(db, email, ip);
     await safeAudit(db, { action: "login_failed", target: email, ip, meta: { reason: "bad_password" } });
     return c.json({ ok: false, code: "invalid_credentials" }, 401);
   }
@@ -205,10 +210,19 @@ internalRoutes.post("/user/revoke-all", async (c) => {
   const body = await c.req.json().catch(() => null);
   const env = envelopeSchema.safeParse(body);
   if (!env.success) return c.json({ ok: false, code: "bad_request" }, 400);
+  // 这里原本一个 caller 校验都没有 —— 任何能到达 Core 的调用者都能吊销任意用户的全部会话。
+  if (!requireAdmin(env.data.caller?.role ?? null)) return c.json({ ok: false, code: "forbidden" }, 403);
   const parsed = z
     .object({ userId: z.string().min(1), reason: z.string().max(64) })
     .safeParse(env.data.payload);
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
+
+  // 踢超管下线同样限超管，与 set-status 保持一致的层级。
+  const target = await findUserById(db, parsed.data.userId);
+  if (!target) return c.json({ ok: false, code: "not_found" }, 404);
+  if (target.role === Role.SuperAdmin && env.data.caller?.role !== Role.SuperAdmin) {
+    return c.json({ ok: false, code: "forbidden" }, 403);
+  }
 
   await db.batch([...revokeAllStatements(db, { userId: parsed.data.userId, reason: parsed.data.reason })]);
   return c.json({ ok: true });
@@ -342,6 +356,20 @@ internalRoutes.post("/user/set-status", async (c) => {
     .safeParse(env.data.payload);
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
 
+  // 禁用超管是超管级操作。admin 能禁超管的话，
+  // set-role 里的「不能降级最后一个超管」保护会被完全绕过 ——
+  // 禁用后 findUserByEmail 过滤 status=active，超管再也登不进来。
+  const target = await findUserById(db, parsed.data.userId);
+  if (!target) return c.json({ ok: false, code: "not_found" }, 404);
+  if (target.role === Role.SuperAdmin && env.data.caller?.role !== Role.SuperAdmin) {
+    return c.json({ ok: false, code: "forbidden" }, 403);
+  }
+  // 禁用最后一个活跃超管会把整个实例锁死，一律拒绝
+  if (parsed.data.status === "disabled" && target.role === Role.SuperAdmin) {
+    const remaining = await activeSuperAdminCount(db);
+    if (remaining <= 1) return c.json({ ok: false, code: "last_super_admin" }, 400);
+  }
+
   await setUserStatus(db, parsed.data.userId, parsed.data.status);
   if (parsed.data.status === "disabled") {
     await db.batch([...revokeAllStatements(db, { userId: parsed.data.userId, reason: "disabled" })]);
@@ -466,15 +494,15 @@ internalRoutes.post("/invite/accept", async (c) => {
   if (!policy.ok) return c.json({ ok: false, code: "weak_password", message: policy.reason }, 400);
 
   // 匿名端点：每次尝试都要算一次 SHA-256 并查库，不限流就是免费的资源消耗。
+  // 同样是原子占位，不留判定与记录分离的窗口。
   const ip = (c.req.header("x-caller-ip") ?? "0.0.0.0").slice(0, 64);
-  if (!(await checkInviteIpAllowed(db, ip))) {
+  if (!(await tryInviteIp(db, ip))) {
     await safeAudit(db, { action: "invite_locked", ip });
     return c.json({ ok: false, code: "locked" }, 429);
   }
 
   const consumed = await consumeInvitation(db, parsed.data.code);
   if (!consumed.ok) {
-    await recordInviteIpFailure(db, ip);
     return c.json({ ok: false, code: "invalid_invite" }, 400);
   }
 
@@ -522,13 +550,17 @@ internalRoutes.post("/audit/list", async (c) => {
   return c.json({ ok: true, logs: rows });
 });
 
+/**
+ * 用户是否已经绑定**任意**第二因子。
+ *
+ * 曾经这里只查 mfa_factors（TOTP），而 Passkey 只写 passkeys 表 ——
+ * 于是只绑了 Passkey 的账号用密码登录时 hasMfa=false，直接拿到 active 会话，
+ * 第二因子被完全绕过。而 /mfa/status 与 gateway 的 mfaGate 又把 passkey 视为已绑，
+ * 两处判据不一致，超管可以只凭密码进 /admin。
+ *
+ * 判据只有一个来源：hasTotpFactor || hasPasskey，与 /mfa/status 保持一致。
+ */
 async function hasActiveMfaFactor(db: ReturnType<typeof getDb>, userId: string): Promise<boolean> {
-  const { mfaFactors } = await import("../db/schema");
-  const { and, eq, isNull } = await import("drizzle-orm");
-  const rows = await db
-    .select({ id: mfaFactors.id })
-    .from(mfaFactors)
-    .where(and(eq(mfaFactors.userId, userId), eq(mfaFactors.status, "active"), isNull(mfaFactors.revokedAt)))
-    .limit(1);
-  return rows.length > 0;
+  const [totp, passkey] = await Promise.all([hasTotpFactor(db, userId), hasPasskey(db, userId)]);
+  return totp || passkey;
 }

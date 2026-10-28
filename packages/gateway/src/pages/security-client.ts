@@ -165,6 +165,13 @@ async function registerPasskey(): Promise<void> {
 
 // ---------------------------------------------------------------- TOTP
 
+/**
+ * 当前正在确认的 TOTP 因子 id。
+ * 服务端要求 confirm 带上它，才能精确激活「这一把」——
+ * 否则会按 userId 把历史上遗留的 pending 因子一并激活。
+ */
+let pendingFactorId: string | null = null;
+
 async function beginTotp(): Promise<void> {
   const button = document.getElementById("totp-begin") as HTMLButtonElement | null;
   const panel = document.getElementById("totp-setup") as HTMLElement | null;
@@ -180,6 +187,7 @@ async function beginTotp(): Promise<void> {
     }
 
     panel.hidden = false;
+    pendingFactorId = start.data.factorId;
     const uri = start.data.otpauthUri;
 
     const uriEl = document.getElementById("totp-uri");
@@ -200,7 +208,14 @@ async function confirmTotp(): Promise<void> {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = new FormData(form);
+    // factorId 必填：服务端要用它精确激活「这一把」因子，
+    // 不能像以前那样按 userId 把全部 pending 批量置为 active。
+    if (!pendingFactorId) {
+      hint("绑定流程已失效，请重新点击「启用 TOTP」");
+      return;
+    }
     const result = await postJson<{ recoveryCodes: string[] }>("/account/security/totp/confirm", {
+      factorId: pendingFactorId,
       code: String(data.get("code") ?? ""),
     });
 

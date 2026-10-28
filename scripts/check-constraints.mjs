@@ -148,6 +148,39 @@ check("凭证与会话：HMAC、__Host-、mfa_pending 不可鉴权", () => {
   // lastUsedAt 不更新的话，活动会话页显示的"最后活动"永远等于创建时间
   mustInclude(session, "/session/touch", "requireAuth 未更新 lastUsedAt");
 
+  // 登录限流：必须原子占位，且账号桶不得阻断正确密码
+  const internalSrc = code("packages/core/src/routes/internal.ts");
+  const loginBlock = block(internalSrc, 'internalRoutes.post("/auth/login"', "internalRoutes.post(");
+  mustInclude(loginBlock, "tryLogin", "登录没有用原子占位的 tryLogin（peek→consume 会被并发绕过）");
+  mustNotMatch(loginBlock, /checkLoginAllowed/, "登录仍在用 checkLoginAllowed 这种 peek 判定");
+  // 账号维度超限不得直接拒绝登录：那会让任何人锁死任意已知邮箱（含唯一超管）
+  mustInclude(
+    loginBlock,
+    "gate.ipBlocked",
+    "登录没有按 IP 维度拒绝 —— 账号桶若也阻断，任何人都能锁死别人的账号",
+  );
+  // 账号桶只能作审计信号，它的分支体里绝不能出现 return / 429 / locked。
+  // 逐行看不够 —— 判定在 if 行、return 在下一行，所以要取整个 if 块。
+  const lockedBranch = loginBlock.match(/if \(gate\.accountLocked\)[\s\S]{0,300}?\n  \}/)?.[0] ?? "";
+  must(lockedBranch.length > 0, "未找到 accountLocked 分支");
+  mustNotMatch(
+    lockedBranch,
+    /return|429|"locked"/,
+    "账号锁定被用来拒绝登录，可被任何人用来锁死任意账号（含唯一超管）",
+  );
+
+  // 登出必须真的吊销服务端会话。/auth 组没有 requireAuth，
+  // 靠 c.get("sessionId") 永远拿不到值 —— 必须自己反查会话。
+  const logoutBlock = block(code("packages/gateway/src/routes/auth.tsx"), 'authRoutes.post("/logout"', "authRoutes.post(");
+  mustInclude(logoutBlock, "getSessionCaller", "登出没有反查会话，只清 Cookie，旧令牌仍可用满 7 天");
+  mustNotMatch(logoutBlock, /const sessionId = c\.get\("sessionId"\)/, "登出仍在读 c.get(sessionId)，该值恒为 undefined");
+
+  // 登录时判断「是否需要第二因子」必须把 Passkey 也算进去。
+  // 只查 mfa_factors 会让仅绑 Passkey 的账号凭密码直接拿 active 会话。
+  const loginMfa = block(code("packages/core/src/routes/internal.ts"), "async function hasActiveMfaFactor", "async function");
+  mustInclude(loginMfa, "hasPasskey", "登录的 MFA 判据没有包含 Passkey，第二因子可被绕过");
+  mustInclude(loginMfa, "hasTotpFactor", "登录的 MFA 判据没有包含 TOTP");
+
   // mfa_pending 必须在服务端被显式拒绝，不能靠调用方自觉
   mustInclude(
     code("packages/core/src/services/session.ts"),
@@ -268,6 +301,15 @@ check("MFA：secret 加密、防重放、单次使用、challenge 有清理", ()
   mustInclude(recovery, "isNull(mfaRecoveryCodes.usedAt)", "恢复码必须单次使用");
   mustInclude(recovery, "returning(", "恢复码必须以受影响行数判定");
 
+  // 重置 MFA 必须连 pending 因子一起清：
+  // pending 不在 /mfa/status、不在 /mfa/factors、不被 cron 清理，
+  // 但 verifyTotp 认它 —— 只清 active 会留下用户看不见也删不掉的第二因子。
+  mustMatch(
+    recovery,
+    /inArray\(mfaFactors\.status, \["active", "pending"\]\)/,
+    "重置 MFA 只清 active，pending 因子会存活并继续可用于验证",
+  );
+
   const passkey = code("packages/core/src/services/passkey.ts");
   mustInclude(
     block(passkey, "export async function completeAuthentication", "// ---- 编解码"),
@@ -298,9 +340,9 @@ check("第二因子：三道门户都有限流、会话绑定与失败计数", (
 
   // 密码已泄露时，第二因子是唯一防线；能无限次尝试的防线不构成防线
   const endpoints = [
-    { path: '"/mfa/verify-totp"', guard: "checkSecondFactorAllowed", record: "recordSecondFactorFailure", clear: "clearSecondFactorFailures" },
-    { path: '"/mfa/verify-recovery"', guard: "checkSecondFactorAllowed", record: "recordSecondFactorFailure", clear: "clearSecondFactorFailures" },
-    { path: '"/passkey/login-verify"', guard: "checkPasskeyIpAllowed", record: "recordPasskeyIpFailure", clear: "clearPasskeyIpFailures" },
+    { path: '"/mfa/verify-totp"', guard: "trySecondFactor", clear: "clearSecondFactorFailures" },
+    { path: '"/mfa/verify-recovery"', guard: "trySecondFactor", clear: "clearSecondFactorFailures" },
+    { path: '"/passkey/login-verify"', guard: "tryPasskeyIp", clear: "clearPasskeyIpFailures" },
   ];
   for (const item of endpoints) {
     const start = mfa.indexOf(`mfaRoutes.post(${item.path}`);
@@ -308,8 +350,18 @@ check("第二因子：三道门户都有限流、会话绑定与失败计数", (
     const next = mfa.indexOf("mfaRoutes.post(", start + 10);
     const body = mfa.slice(start, next > start ? next : start + 4000);
 
+    // 必须是原子占位（try* 系列），不能用 peek 判定 —— 那是可被并发绕过的 TOCTOU
     mustInclude(body, item.guard, `${item.path} 没有调用 ${item.guard}，可无限尝试`);
-    mustInclude(body, item.record, `${item.path} 失败时不计数，限流形同虚设`);
+    mustNotMatch(
+      body,
+      /check(SecondFactor|PasskeyIp)Allowed/,
+      `${item.path} 仍在用 peek 判定（TOCTOU），应改用 ${item.guard}`,
+    );
+    mustNotMatch(
+      body,
+      /record(SecondFactor|PasskeyIp)Failure/,
+      `${item.path} 仍在用「失败后才计数」，判定与记录分离会被并发绕过`,
+    );
     // 通过后必须清零，否则正常用户会被历史失败拖黑
     mustInclude(body, item.clear, `${item.path} 成功后不清零，正常用户会被误锁`);
   }
@@ -327,10 +379,13 @@ check("第二因子：三道门户都有限流、会话绑定与失败计数", (
 
   // 桶定义了就必须接线：只定义不用的桶是空头支票
   const rateLimit = code("packages/core/src/services/rateLimit.ts");
-  const bucketBlock = rateLimit.slice(
-    rateLimit.indexOf("export const buckets"),
-    rateLimit.indexOf("// ----", rateLimit.indexOf("export const buckets")),
-  );
+  // 精确切到 "export const buckets = { ... } as const;" 这一段。
+  // 原先用「到下一个 // ----」当边界，一旦下面新增别的对象（比如 LoginGate 类型），
+  // 就会把无关字段也当成桶名。
+  const bucketsStart = rateLimit.indexOf("export const buckets");
+  const bucketsEnd = rateLimit.indexOf("} as const;", bucketsStart);
+  must(bucketsStart >= 0 && bucketsEnd > bucketsStart, "未找到 buckets 定义块");
+  const bucketBlock = rateLimit.slice(bucketsStart, bucketsEnd);
   const bucketKeys = [...bucketBlock.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]);
   must(bucketKeys.length > 0, "未解析到任何限流桶");
   const sources = walk("packages/core/src", /\.ts$/);
@@ -501,6 +556,11 @@ check("用户旅程：每个后端能力都有入口，每次操作都有反馈"
 // ============================================================ 8. 危险动作
 check("危险动作：重置 / 恢复 / 改密后的会话处理", () => {
   const mfa = code("packages/core/src/routes/mfa.ts");
+
+  // 激活必须按 factorId 精确命中，不能按 userId 批量把 pending 全置 active
+  const activate = block(mfa, "async function activateTotpFactor", "async function");
+  mustInclude(activate, "eq(mfaFactors.id, factorId)", "activateTotpFactor 没有按 factorId 精确定位，会批量激活残留因子");
+  mustNotMatch(activate, /eq\(mfaFactors\.userId, userId\)/, "activateTotpFactor 仍按 userId 批量激活");
 
   const reset = block(mfa, '"/mfa/reset"', "mfaRoutes.post(");
   mustInclude(reset, "revokeMfaStatements", "超管重置 MFA 必须吊销因子");

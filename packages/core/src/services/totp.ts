@@ -1,5 +1,5 @@
 import { TOTP, Secret } from "otpauth";
-import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { mfaFactors } from "../db/schema";
 import { decryptSecret, encryptSecret } from "../lib/aes";
@@ -65,7 +65,7 @@ export type VerifyResult =
  */
 export async function verifyTotp(
   db: Db,
-  params: { userId: string; code: string; masterKey: string },
+  params: { userId: string; code: string; masterKey: string; factorId?: string },
 ): Promise<VerifyResult> {
   const rows = await db
     .select()
@@ -74,11 +74,16 @@ export async function verifyTotp(
       and(
         eq(mfaFactors.userId, params.userId),
         eq(mfaFactors.factorType, "totp"),
-        // 启用确认阶段因子还是 pending，登录验证阶段是 active。
-        // 两种都要能验证，否则永远无法完成首次绑定。
-        inArray(mfaFactors.status, ["pending", "active"]),
+        // 指定了 factorId 就必须精确命中它 —— 绑定确认阶段靠这个避免
+        // 「验的是 A、激活的是 B」。未指定时（登录验证）两种状态都可参与，
+        // 否则首次绑定永远完不成。
+        ...(params.factorId
+          ? [eq(mfaFactors.id, params.factorId), eq(mfaFactors.status, "pending")]
+          : [inArray(mfaFactors.status, ["pending", "active"])]),
       ),
     )
+    // 多因子并存时优先 active：pending 是未确认的，不该盖过已确认的因子。
+    .orderBy(desc(mfaFactors.status), desc(mfaFactors.createdAt))
     .limit(1);
 
   const factor = rows[0];

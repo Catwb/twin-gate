@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { callCore } from "../core/callCore";
 import { mfaGate } from "../middleware/mfaGate";
 import { requireAuth } from "../middleware/session";
+import { renderSecurityPage } from "./security";
 import type { AppContext } from "../types";
 
 export const securityApiRoutes = new Hono<AppContext>();
@@ -12,14 +13,21 @@ securityApiRoutes.use("*", mfaGate);
 
 securityApiRoutes.post("/security/passkey/options", async (c) => {
   const caller = c.get("caller")!;
+  const body = (await c.req.json().catch(() => null)) as { currentPassword?: string } | null;
   const result = await callCore<{ ok: boolean; options: Record<string, unknown> }>(c.env, {
     method: "POST",
     path: "/passkey/register-options",
     caller,
-    payload: {},
+    payload: { currentPassword: body?.currentPassword ?? "" },
   });
 
-  if (!result.ok) return c.json({ ok: false, message: "无法生成绑定选项" }, 400);
+  if (!result.ok) {
+    const coreErr = result as { code?: string };
+    if (coreErr.code === "password_required" || coreErr.code === "invalid_credentials") {
+      return c.json({ ok: false, message: "请输入当前密码以确认身份", code: coreErr.code }, 400);
+    }
+    return c.json({ ok: false, message: "无法生成绑定选项" }, 400);
+  }
   return c.json({ ok: true, data: result.data });
 });
 
@@ -53,42 +61,55 @@ securityApiRoutes.post("/security/passkey/verify", async (c) => {
 
 securityApiRoutes.post("/security/totp/begin", async (c) => {
   const caller = c.get("caller")!;
+  const body = (await c.req.json().catch(() => null)) as { currentPassword?: string } | null;
   const result = await callCore<{ ok: boolean; factorId: string; otpauthUri: string }>(c.env, {
     method: "POST",
     path: "/mfa/totp/begin",
     caller,
-    payload: {},
+    payload: { currentPassword: body?.currentPassword ?? "" },
   });
 
-  if (!result.ok) return c.json({ ok: false, message: "无法开始启用 TOTP" }, 400);
+  if (!result.ok) {
+    const coreErr = result as { code?: string };
+    if (coreErr.code === "password_required" || coreErr.code === "invalid_credentials") {
+      return c.json({ ok: false, message: "请输入当前密码以确认身份", code: coreErr.code }, 400);
+    }
+    return c.json({ ok: false, message: "无法开始启用 TOTP" }, 400);
+  }
   return c.json({ ok: true, data: result.data });
 });
 
 securityApiRoutes.post("/security/totp/confirm", async (c) => {
   const caller = c.get("caller")!;
-  const body = (await c.req.json().catch(() => null)) as { code?: string } | null;
+  const body = (await c.req.json().catch(() => null)) as { factorId?: string; code?: string } | null;
+  if (!body?.factorId) return c.json({ ok: false, message: "缺少 factorId，请重新开始绑定" }, 400);
 
   const result = await callCore<{ ok: boolean; recoveryCodes: string[] }>(c.env, {
     method: "POST",
     path: "/mfa/totp/confirm",
     caller,
-    payload: { code: body?.code ?? "" },
+    payload: { factorId: body.factorId, code: body.code ?? "" },
     ip: c.req.header("cf-connecting-ip") ?? undefined,
   });
 
   if (!result.ok) return c.json({ ok: false, message: "验证码不正确" }, 400);
-  return c.json({ ok: true, data: result.data });
+
+  // 恢复码只在这一次响应里出现：直接渲染页面，不跳转带查询串。
+  return renderSecurityPage(c, { freshCodes: result.data.recoveryCodes, justEnabled: true });
 });
 
 securityApiRoutes.post("/security/recovery/regenerate", async (c) => {
   const caller = c.get("caller")!;
+  const body = (await c.req.json().catch(() => null)) as { currentPassword?: string } | null;
   const result = await callCore<{ ok: boolean; codes: string[] }>(c.env, {
     method: "POST",
     path: "/mfa/recovery/regenerate",
     caller,
-    payload: {},
+    payload: { currentPassword: body?.currentPassword ?? "" },
   });
 
   if (!result.ok) return c.json({ ok: false, message: "生成失败" }, 400);
-  return c.json({ ok: true, data: { recoveryCodes: result.data.codes } });
+
+  // 同上：新恢复码直接渲染，不进 URL。
+  return renderSecurityPage(c, { freshCodes: result.data.codes });
 });

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { mfaFactors, mfaRecoveryCodes, passkeys } from "../db/schema";
 import { randomHex, sha256Hex, uuid } from "../lib/crypto";
@@ -95,8 +95,14 @@ export function revokeMfaStatements(db: Db, userId: string) {
   return [
     db
       .update(mfaFactors)
+      // 必须连 pending 一起清。
+      // pending 因子不在 /mfa/status、不在 /mfa/factors、不被 cron 清理，
+      // 但 verifyTotp 认它（inArray(["pending","active"])）——
+      // 只清 active 会让「重置 MFA」留下一个用户看不见、也删不掉的第二因子。
       .set({ status: "revoked", revokedAt: now })
-      .where(and(eq(mfaFactors.userId, userId), eq(mfaFactors.status, "active"))),
+      .where(
+        and(eq(mfaFactors.userId, userId), inArray(mfaFactors.status, ["active", "pending"])),
+      ),
     db
       .update(passkeys)
       .set({ revokedAt: now })
