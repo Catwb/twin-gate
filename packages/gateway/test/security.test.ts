@@ -94,9 +94,14 @@ describe("静态页与 SSR 页的安全头一致", () => {
     expect(raw).toContain("/assets/app.css");
   });
 
-  it("_headers 覆盖 build:js 产出的每一个脚本", async () => {
+  it("_headers 覆盖 build:js 声明的每一个脚本", async () => {
     // 上一次漏的是 password.js —— 构建脚本加了产物，_headers 和 CI 断言都没跟上。
     // 这里直接从 package.json 的构建命令里解析产物名，加了新脚本就自动覆盖。
+    //
+    // 只读两个**已提交**的文件：package.json 与 public/_headers。
+    // 绝不读 public/assets —— 那是构建产物、被 gitignore 掉，
+    // 而 CI 里测试跑在构建之前（verify.yml: Install → Typecheck → Test → ... → Build），
+    // 那个目录根本不存在。曾经在这里 readdirSync 过一次，整个 CI 直接 ENOENT。
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
 
@@ -106,13 +111,9 @@ describe("静态页与 SSR 页的安全头一致", () => {
     const buildJs = pkg.scripts["build:js"] ?? "";
     const outputs = [...buildJs.matchAll(/--outfile=\S*?\/?assets\/([\w.-]+\.js)/g)].map((m) => m[1]);
 
-    // 断言的是「构建脚本声明的产物」与「工作区实际存在的 js」完全一致 ——
-    // 不写死数量。写死一次就在加脚本时过期一次，而这条测试本身正是为了防这件事。
-    const { readdirSync } = await import("node:fs");
-    const actual = readdirSync(resolve(__dirname, "../public/assets"))
-      .filter((f) => f.endsWith(".js"))
-      .sort();
-    expect(outputs.slice().sort()).toEqual(actual);
+    // 不写死数量：写死一次就在加脚本时过期一次，而这条测试存在的意义正是防这件事。
+    // 「声明的产物真的被生产出来了吗」由 CI 构建后的产物断言负责，那里才看得见 dist/。
+    expect(outputs.length).toBeGreaterThan(0);
 
     const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
     for (const name of outputs) {

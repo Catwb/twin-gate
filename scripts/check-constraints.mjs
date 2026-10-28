@@ -740,6 +740,34 @@ check("CI：部署全程手动、配置注入安全、种子脚本幂等", () =>
     must(match[1] === "0", `${file} 强制用户改密（密码是部署者自己设的）`);
   }
   mustInclude(deploy, "seed-admin-ci.mjs", "deploy.yml 未调用种子脚本");
+
+  // 单元测试跑在构建之前（Install → Typecheck → Test → … → Build）。
+  // 测试若去读 dist/ 或 public/assets/，干净的 CI 上必然 ENOENT ——
+  // 本地因为早就构建过，完全看不出来。
+  for (const file of walk("packages/gateway/test", /\.test\.tsx?$/)) {
+    const src = read(file);
+    for (const forbidden of ["../public/assets", "../dist"]) {
+      mustNotMatch(
+        src,
+        new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        `${file} 读取构建产物，构建前跑测试会失败`,
+      );
+    }
+  }
+
+  // 三个 workflow 都必须用推导脚本，不得再手写产物清单
+  const workflows = ["deploy.yml", "deploy-quick.yml", "verify.yml"];
+  for (const file of workflows) {
+    const src = read(`.github/workflows/${file}`);
+    mustNotMatch(src, /dist\/assets\/app\.css/, `${file} 又手写了产物清单，加脚本时会漏`);
+  }
+  for (const file of ["deploy.yml", "deploy-quick.yml", "verify.yml"]) {
+    mustInclude(
+      read(`.github/workflows/${file}`),
+      "verify-build-output.mjs",
+      `${file} 没有用推导脚本检查产物`,
+    );
+  }
 });
 
 // ============================================================ 15. 文档统计
