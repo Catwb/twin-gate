@@ -19,6 +19,9 @@ adminRoutes.get("/", (c) => c.redirect("/admin/users", 302));
 adminRoutes.get("/users", requireRole(Role.Admin), async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
   const isSuperAdmin = c.get("caller")?.role === Role.SuperAdmin;
+  // 操作后的反馈：所有 POST 都以 ?done= / ?error= 跳回这里
+  const done = c.req.query("done");
+  const errorMessage = c.req.query("error");
   const result = await callCore<{ ok: boolean; users: UserRow[] }>(c.env, {
     method: "POST",
     path: "/user/list",
@@ -29,7 +32,8 @@ adminRoutes.get("/users", requireRole(Role.Admin), async (c) => {
   const users = result.ok ? result.data.users : [];
   return c.html(
     <AdminLayout title="用户" current="/admin/users">
-      <p class="alert alert-info" id="page-notice" hidden></p>
+      {errorMessage ? <p class="alert alert-error">{errorMessage}</p> : null}
+      {done ? <p class="alert alert-info">{done}</p> : null}
 
       <table class="table">
         <thead>
@@ -84,6 +88,8 @@ adminRoutes.get("/users", requireRole(Role.Admin), async (c) => {
 adminRoutes.get("/invites", requireRole(Role.Admin), async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
   const createdCode = c.req.query("created");
+  const done = c.req.query("done");
+  const errorMessage = c.req.query("error");
   const result = await callCore<{ ok: boolean; invitations: InvitationRow[] }>(c.env, {
     method: "POST",
     path: "/invite/list",
@@ -97,6 +103,9 @@ adminRoutes.get("/invites", requireRole(Role.Admin), async (c) => {
       <p class="hint">
         邀请默认关闭（INVITE_ENABLED=false）。开启后生成的邀请码只显示一次，请立即复制并线下转达。
       </p>
+
+      {errorMessage ? <p class="alert alert-error">{errorMessage}</p> : null}
+      {done ? <p class="alert alert-info">{done}</p> : null}
 
       {createdCode ? (
         <div class="alert alert-info">
@@ -264,13 +273,16 @@ adminRoutes.post("/users/set-status", requireRole(Role.Admin), async (c) => {
     return c.redirect("/admin/users?error=" + encodeURIComponent("无效状态"), 303);
   }
 
-  await callCore(c.env, {
+  const result = await callCore(c.env, {
     method: "POST",
     path: "/user/set-status",
     caller: c.get("caller"),
     payload: { userId, status },
   });
 
+  if (!result.ok) {
+    return c.redirect("/admin/users?error=" + encodeURIComponent("操作失败，请确认权限"), 303);
+  }
   return c.redirect("/admin/users?done=" + encodeURIComponent(status === "disabled" ? "已禁用" : "已启用"), 303);
 });
 
@@ -299,13 +311,16 @@ adminRoutes.post("/users/revoke-sessions", requireRole(Role.Admin), async (c) =>
   const form = await c.req.formData();
   const userId = String(form.get("userId") ?? "");
 
-  await callCore(c.env, {
+  const result = await callCore(c.env, {
     method: "POST",
     path: "/user/revoke-all",
     caller: c.get("caller"),
     payload: { userId, reason: "revoked_by_admin" },
   });
 
+  if (!result.ok) {
+    return c.redirect("/admin/users?error=" + encodeURIComponent("操作失败，请确认权限"), 303);
+  }
   return c.redirect("/admin/users?done=" + encodeURIComponent("已吊销该用户全部会话"), 303);
 });
 
@@ -336,12 +351,15 @@ adminRoutes.post("/invites/revoke", requireRole(Role.Admin), async (c) => {
   const form = await c.req.formData();
   const id = String(form.get("id") ?? "");
 
-  await callCore(c.env, {
+  const result = await callCore(c.env, {
     method: "POST",
     path: "/invite/revoke",
     caller: c.get("caller"),
     payload: { id },
   });
 
+  if (!result.ok) {
+    return c.redirect("/admin/invites?error=" + encodeURIComponent("撤销失败"), 303);
+  }
   return c.redirect("/admin/invites?done=" + encodeURIComponent("已撤销"), 303);
 });

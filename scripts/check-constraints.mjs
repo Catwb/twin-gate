@@ -12,6 +12,7 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { checkFrontendPaths } from "./checks/frontend-paths.mjs";
+import { checkAdminFeedback } from "./checks/admin-feedback.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const checks = [];
@@ -385,6 +386,9 @@ check("改密页：GET 与 POST 成对存在", () => {
 
 // ============================================================ 16. 前端路径一致性
 checkFrontendPaths({ check, ROOT });
+
+// ============================================================ 17. 管理端反馈一致性
+checkAdminFeedback({ check, ROOT });
 
 // ============================================================ 输出
 for (const c of checks) {

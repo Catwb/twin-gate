@@ -47,7 +47,7 @@ accountRoutes.get("/", async (c) => {
   const isAdmin = caller.role === "admin" || caller.role === "super_admin";
 
   return c.html(
-    <AdminLayout title="我的账户" current="/account">
+    <AdminLayout title="我的账户" current="/account" role={caller.role}>
       {info.mustChangePassword ? (
         <p class="alert alert-error">
           你的密码仍是初始密码，请尽快<a href="/account/password">修改</a>。
