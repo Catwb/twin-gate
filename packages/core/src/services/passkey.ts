@@ -93,6 +93,14 @@ export async function lazyCleanupChallenges(db: Db, userId: string): Promise<voi
     .where(and(eq(passkeyChallenges.userId, userId), lt(passkeyChallenges.expiresAt, now)));
 }
 
+/**
+ * 免用户名登录时 user_id 是 NULL，按 user_id 过滤的清理永远碰不到这些行。
+ * 这条按 expires_at 全局清，量级由 cron 的批次上限兜住。
+ */
+export async function lazyCleanupExpiredChallenges(db: Db): Promise<void> {
+  await db.delete(passkeyChallenges).where(lt(passkeyChallenges.expiresAt, nowSeconds()));
+}
+
 export type RegistrationOptions = Awaited<ReturnType<typeof generateRegistrationOptions>>;
 
 export async function buildRegistrationOptions(

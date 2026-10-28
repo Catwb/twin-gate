@@ -2,7 +2,7 @@ import { generateAuthenticationOptions } from "@simplewebauthn/server";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { passkeys } from "../db/schema";
-import { saveChallenge } from "./passkey";
+import { lazyCleanupExpiredChallenges, saveChallenge } from "./passkey";
 
 /**
  * 生成认证选项。
@@ -22,6 +22,10 @@ export async function buildAuthenticationOptionsForUser(
       .where(eq(passkeys.userId, params.userId));
     allowCredentials = rows.map((row) => ({ id: row.credentialId }));
   }
+
+  // 这条路径（尤其是 userId 为 null 的可发现凭证路径）产生的 challenge
+  // 不会被按 user_id 的清理碰到，必须先做一次全局过期清理。
+  await lazyCleanupExpiredChallenges(db);
 
   const options = await generateAuthenticationOptions({
     rpID: params.rpId,

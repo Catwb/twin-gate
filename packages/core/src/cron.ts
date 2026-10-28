@@ -7,6 +7,7 @@ import {
   authorizationCodes,
   invitations,
   oidcStates,
+  passkeyChallenges,
   passwordResets,
   rateLimits,
   sessions,
@@ -67,6 +68,16 @@ export async function runCleanup(db: Db): Promise<CleanupReport> {
       SELECT id FROM ${invitations}
       WHERE expires_at < ${now - 30 * 24 * 3600} OR used_at < ${now - 30 * 24 * 3600}
       LIMIT ${CRON_DELETE_BATCH}
+    )`,
+  );
+
+  // passkey_challenges 必须在 cron 里清：
+  // 免用户名登录时 user_id 为 NULL，lazyCleanupChallenges 按 user_id 过滤，
+  // 那些行永远不会被它碰到 —— 每条都是匿名请求就能留下的垃圾。
+  report.passkeyChallenges = await deleteBatch(
+    db,
+    sql`DELETE FROM ${passkeyChallenges} WHERE id IN (
+      SELECT id FROM ${passkeyChallenges} WHERE expires_at < ${now} LIMIT ${CRON_DELETE_BATCH}
     )`,
   );
 

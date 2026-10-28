@@ -124,6 +124,27 @@ export function checkSecondFactor({ check, ROOT }) {
     }
   });
 
+  check("第二因子：challenge 表必须有全局清理路径", () => {
+    // 免用户名登录时 user_id 为 NULL，按 user_id 过滤的清理永远碰不到这些行。
+    // 只靠 lazyCleanupChallenges 会让这张表单调增长。
+    const cron = read("packages/core/src/cron.ts");
+    // 只匹配报告键，不匹配 import 或 SQL 里的表名 —— 那些在删掉清理逻辑后依然存在
+    if (!/report\.passkeyChallenges\s*=/.test(cron)) {
+      throw new Error("cron 未清理 passkey_challenges，匿名登录产生的行会无限堆积");
+    }
+
+    const passkey = read("packages/core/src/services/passkey.ts");
+    if (!/export async function lazyCleanupExpiredChallenges/.test(passkey)) {
+      throw new Error("缺少不按 user_id 过滤的过期清理函数");
+    }
+
+    // 生成认证选项时必须真的调用它
+    const auth = read("packages/core/src/services/passkeyAuth.ts");
+    if (!auth.includes("lazyCleanupExpiredChallenges") || !auth.includes("await lazyCleanupExpiredChallenges(db)")) {
+      throw new Error("生成认证选项时没有调用全局过期清理");
+    }
+  });
+
   check("第二因子：错误 detail 不回传浏览器", () => {
     const mfa = read("packages/core/src/routes/mfa.ts");
 
