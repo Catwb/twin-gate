@@ -105,7 +105,14 @@ describe("静态页与 SSR 页的安全头一致", () => {
     };
     const buildJs = pkg.scripts["build:js"] ?? "";
     const outputs = [...buildJs.matchAll(/--outfile=\S*?\/?assets\/([\w.-]+\.js)/g)].map((m) => m[1]);
-    expect(outputs.length).toBeGreaterThanOrEqual(4);
+
+    // 断言的是「构建脚本声明的产物」与「工作区实际存在的 js」完全一致 ——
+    // 不写死数量。写死一次就在加脚本时过期一次，而这条测试本身正是为了防这件事。
+    const { readdirSync } = await import("node:fs");
+    const actual = readdirSync(resolve(__dirname, "../public/assets"))
+      .filter((f) => f.endsWith(".js"))
+      .sort();
+    expect(outputs.slice().sort()).toEqual(actual);
 
     const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
     for (const name of outputs) {
