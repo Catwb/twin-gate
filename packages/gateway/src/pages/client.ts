@@ -104,5 +104,29 @@ async function loginWithPasskey(): Promise<void> {
   });
 }
 
+/**
+ * 恢复码表单的展开/收起。
+ *
+ * 默认收起是为了让 TOTP 主路径保持简洁，
+ * 但按钮本身始终可见 —— 设备丢失时用户能一眼看到出路。
+ */
+function setupRecoveryToggle(): void {
+  const toggle = document.getElementById("recovery-toggle") as HTMLButtonElement | null;
+  const form = document.getElementById("recovery-form") as HTMLFormElement | null;
+  if (!toggle || !form) return;
+
+  toggle.addEventListener("click", () => {
+    const willShow = form.hidden;
+    form.hidden = !willShow;
+    toggle.textContent = willShow ? "收起恢复码" : "使用恢复码";
+
+    if (willShow) {
+      const input = form.querySelector("input[name=code]") as HTMLInputElement | null;
+      input?.focus();
+    }
+  });
+}
+
 loginWithPassword();
 loginWithPasskey();
+setupRecoveryToggle();

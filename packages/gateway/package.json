@@ -10,10 +10,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "build:css": "esbuild src/styles/index.css --bundle --minify --outfile=public/assets/app.css",
-    "build:js": "esbuild src/pages/client.ts src/pages/security-client.ts src/pages/password-client.ts --bundle --format=esm --minify --outdir=public/assets",
+    "build:js": "esbuild src/pages/client.ts --bundle --format=esm --minify --outfile=public/assets/app.js && esbuild src/pages/security-client.ts --bundle --format=esm --minify --outfile=public/assets/security.js && esbuild src/pages/password-client.ts --bundle --format=esm --minify --outfile=public/assets/password.js",
     "build:ssg": "tsx build.tsx",
-    "build": "pnpm build:css && pnpm build:js && pnpm build:js:rename && pnpm build:ssg",
-    "build:js:rename": "node -e \"const fs=require('node:fs');fs.renameSync('public/assets/client.js','public/assets/app.js');fs.renameSync('public/assets/security-client.js','public/assets/security.js');fs.renameSync('public/assets/password-client.js','public/assets/password.js')\""
+    "build": "pnpm build:css && pnpm build:js && pnpm build:ssg"
   },
   "dependencies": {
     "@sso/shared": "workspace:*",

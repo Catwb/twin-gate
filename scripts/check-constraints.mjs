@@ -517,6 +517,28 @@ check("改密响应把业务数据放在 data 内", () => {
   return "ok";
 });
 
+check("恢复码有可用的登录入口", () => {
+  const page = read(join(ROOT, "packages/gateway/src/pages/mfa.tsx"));
+  const client = read(join(ROOT, "packages/gateway/src/pages/client.ts"));
+  const route = read(join(ROOT, "packages/gateway/src/routes/mfa.tsx"));
+
+  // 页面必须有表单，且提交到后端已有的端点
+  if (!page.includes('action="/auth/mfa/recovery"')) {
+    throw new Error("MFA 页面没有恢复码表单");
+  }
+  if (!page.includes("recovery-toggle")) {
+    throw new Error("MFA 页面没有恢复码入口按钮");
+  }
+  if (!client.includes("setupRecoveryToggle")) {
+    throw new Error("客户端没有绑定恢复码表单的展开逻辑");
+  }
+  // 后端端点必须存在
+  if (!route.includes('mfaRoutes.post("/mfa/recovery"')) {
+    throw new Error("后端缺少 /mfa/recovery 端点");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {
