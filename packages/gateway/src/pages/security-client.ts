@@ -6,14 +6,50 @@
  */
 import { base64urlToBuffer, bufferToBase64url, postJson, setHint } from "./webauthn";
 
+/**
+ * 统一提示入口。
+ * 必须写到页面顶部那个常驻元素，不能写进隐藏面板里的 #totp-status ——
+ * 否则 Passkey 失败时用户看不到任何反馈，表现为"点了没反应"。
+ */
 function hint(text: string): void {
-  setHint("totp-status", text);
+  const errorEl = document.getElementById("security-error");
+  const hintEl = document.getElementById("security-hint");
+
+  if (hintEl) hintEl.textContent = text;
+
+  if (errorEl) {
+    const isError = /失败|错误|无法|不正确|过期|异常|取消/.test(text);
+    errorEl.textContent = isError ? text : "";
+    errorEl.hidden = !isError;
+  }
 }
 
 /**
  * 把 Core 的错误码翻译成可操作提示。
  * 之前只显示"绑定失败"，排查时看不出是域名不匹配还是用户取消。
  */
+/**
+ * 把浏览器抛出的 DOMException 翻译成可操作提示。
+ * 移动端 Chrome 最常见的是 NotAllowedError（用户取消或超时）
+ * 与 SecurityError（rpId 与当前域名不匹配）。
+ */
+function describeWebAuthnException(name: string, message: string): string {
+  switch (name) {
+    case "NotAllowedError":
+      return "已取消或超时。请确认已用指纹/面容/PIN 完成验证";
+    case "SecurityError":
+      return "安全错误：当前域名与 RP_ID 不匹配。请用配置的正式域名访问（不能是 IP 或别的域名）";
+    case "InvalidStateError":
+      return "该设备已绑定过此账号的 Passkey。可换一台设备，或先在系统设置里删除旧凭证";
+    case "NotSupportedError":
+      return "此浏览器或设备不支持所需的验证方式";
+    case "AbortError":
+      return "操作被中断，请重试";
+    default:
+      return `绑定失败：${name} ${message ? "- " + message : ""}`.trim();
+  }
+}
+
 function describePasskeyError(code?: string | null, fallback?: string): string {
   switch (code) {
     case "invalid_challenge":
@@ -37,10 +73,32 @@ async function registerPasskey(): Promise<void> {
 
   button.addEventListener("click", async () => {
     button.disabled = true;
+    hint("正在请求绑定选项…");
+
+    // 移动端浏览器常见：环境不支持 WebAuthn 或非安全上下文。
+    if (!window.PublicKeyCredential) {
+      hint("当前浏览器不支持 Passkey，或页面不是 HTTPS");
+      button.disabled = false;
+      return;
+    }
+
+    // isUserVerifyingPlatformAuthenticatorAvailable 在部分移动浏览器上缺失，
+    // 有就查一下，没有就继续（不阻断）。
+    try {
+      if (typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function") {
+        const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        if (!available) {
+          hint("此设备的生物识别不可用，将尝试使用手机/安全密钥等其他方式");
+        }
+      }
+    } catch {
+      // 探测失败不影响后续流程
+    }
+
     try {
       const start = await postJson<{ options: Record<string, unknown> }>("/admin/security/passkey/options", {});
       if (!start.ok || !start.data) {
-        hint("无法开始绑定，请刷新重试");
+        hint(start.message ?? "无法开始绑定，请刷新重试");
         return;
       }
 
@@ -108,8 +166,13 @@ async function registerPasskey(): Promise<void> {
       // 把 Core 的错误码翻译成可操作的提示，
       // 而不是笼统的"绑定失败"——这个问题排查过一次，代价很高。
       hint(describePasskeyError(finish.code, finish.message));
-    } catch {
-      hint("绑定被取消");
+    } catch (error) {
+      // 打出来，用户可以在控制台把原因发给我们。
+      // 移动端现场调试困难，这是唯一的线索来源。
+      console.error("[passkey] 注册异常:", error);
+      const name = error instanceof Error ? error.name : "UnknownError";
+      const message = error instanceof Error ? error.message : String(error);
+      hint(describeWebAuthnException(name, message));
     } finally {
       button.disabled = false;
     }

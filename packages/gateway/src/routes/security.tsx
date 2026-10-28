@@ -44,6 +44,12 @@ securityRoutes.get("/security", async (c) => {
         </div>
       ) : null}
 
+      {/* 独立的提示区：必须永远可见。
+          之前所有提示都写进 #totp-status，而那个元素在隐藏的 TOTP 面板内，
+          导致 Passkey 出错时用户完全看不到任何反馈。 */}
+      <p class="alert alert-error" id="security-error" hidden></p>
+      <p class="hint" id="security-hint"></p>
+
       <h2 class="section-title">二次验证</h2>
       <table class="table">
         <tbody>

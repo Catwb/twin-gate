@@ -417,6 +417,30 @@ check("Passkey 的 origin/rpId 经过规范化", () => {
   return "ok";
 });
 
+check("安全页提示写到常驻可见元素", () => {
+  const client = read(join(ROOT, "packages/gateway/src/pages/security-client.ts"));
+
+  // 提示不能只写进 #totp-status —— 它在 hidden 的 TOTP 面板内，
+  // 用户看不到任何反馈，表现为"点了没反应"。
+  if (!client.includes('"security-hint"') && !client.includes("'security-hint'")) {
+    throw new Error("安全页提示未写入常驻元素 #security-hint");
+  }
+  if (!client.includes('"security-error"') && !client.includes("'security-error'")) {
+    throw new Error("缺少错误高亮元素 #security-error");
+  }
+
+  // 异常必须落到 console，移动端现场只能靠这个排查
+  if (!client.includes("console.error")) {
+    throw new Error("Passkey 异常未打印到控制台");
+  }
+
+  const page = read(join(ROOT, "packages/gateway/src/routes/security.tsx"));
+  if (!page.includes('id="security-hint"')) {
+    throw new Error("页面缺少 #security-hint 元素");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

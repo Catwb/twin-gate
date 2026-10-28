@@ -19,6 +19,19 @@ describe("安全响应头", () => {
     expect(headers["X-Content-Type-Options"]).toBe("nosniff");
   });
 
+  it("Permissions-Policy 不含已废弃的 interest-cohort", () => {
+    // FLoC 已被 Topics API 取代，Chrome 不再识别该指令，
+    // 保留它只会在每个页面控制台刷警告。
+    expect(headers["Permissions-Policy"]).not.toContain("interest-cohort");
+  });
+
+  it("Permissions-Policy 仍禁用敏感能力", () => {
+    const policy = headers["Permissions-Policy"];
+    for (const feature of ["camera", "microphone", "geolocation"]) {
+      expect(policy).toContain(`${feature}=()`);
+    }
+  });
+
   it("静态页与 SSR 页引用同一个 CSP 常量", () => {
     // _headers 无法在本测试里读，但这里断言 CSP 是模块级常量而非函数拼接，
     // 保证两处引用的是同一个值。
@@ -52,5 +65,32 @@ describe("CSRF 中间件", () => {
     const source = readFileSync(resolve(__dirname, "../src/middleware/csrf.ts"), "utf8");
     // 两者都缺失时必须返回 false（拒绝）
     expect(source).toMatch(/if \(!origin && !referer\) return false;/);
+  });
+});
+describe("静态页与 SSR 页的安全头一致", () => {
+  it("_headers 中的 CSP 与 CONTENT_SECURITY_POLICY 完全相同", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
+
+    const match = raw.match(/^\s*Content-Security-Policy:\s*(.+)$/m);
+    expect(match, "_headers 中缺少 Content-Security-Policy").toBeTruthy();
+    expect(match![1].trim()).toBe(CONTENT_SECURITY_POLICY);
+  });
+
+  it("_headers 也禁用了 interest-cohort", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
+    const policy = raw.match(/^\s*Permissions-Policy:\s*(.+)$/m)?.[1] ?? "";
+    expect(policy).not.toContain("interest-cohort");
+  });
+
+  it("_headers 覆盖了静态页与静态资源", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const raw = readFileSync(resolve(__dirname, "../public/_headers"), "utf8");
+    expect(raw).toContain("/*");
+    expect(raw).toContain("/assets/app.css");
   });
 });

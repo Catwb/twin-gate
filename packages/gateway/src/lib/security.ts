@@ -21,7 +21,12 @@ export function securityHeaders(): Record<string, string> {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    // 注意：不要加 interest-cohort=()。
+    // 那是 FLoC 的指令，Google 已用 Topics API 取代 FLoC，
+    // Chrome 不再识别它，反而会在控制台报：
+    //   "Origin trial controlled feature not enabled: 'interest-cohort'"
+    // 只保留确实是本项目会用到、且需要显式禁用的能力。
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   };
 }
