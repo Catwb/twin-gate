@@ -45,11 +45,14 @@ pnpm dev:gateway   # 8787
 
 本地管理员：`admin@local.test` / `admin-local-test-1234`（仅开发环境，见 `scripts/seed-superadmin.mjs`）
 
+已部署好实例、想知道怎么登录 / 邀请人 / 绑 MFA / 接应用，看 **[docs/使用指南.md](docs/使用指南.md)**。
+
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/deploy.md](docs/deploy.md) | **第一次部署从这里开始**（Git → Workers Builds） |
+| [docs/deploy.md](docs/deploy.md) | **第一次部署从这里开始**（GitHub Actions 手动触发） |
+| [docs/使用指南.md](docs/使用指南.md) | **部署完之后怎么用**：登录、邀请、MFA、管理后台、接入应用 |
 | [docs/runbook.md](docs/runbook.md) | 日常运维速查 |
 | [docs/下游集成.md](docs/下游集成.md) | 给接入方看的 OIDC 集成指南 |
 | [SECURITY.md](SECURITY.md) | 威胁模型、能防什么、不防什么 |

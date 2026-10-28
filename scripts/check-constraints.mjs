@@ -442,7 +442,7 @@ check("前端脚本：路径存在、异常不吞、提示可见", () => {
   }
 
   const usedPaths = new Set();
-  for (const file of ["client.ts", "security-client.ts", "password-client.ts"]) {
+  for (const file of ["client.ts", "security-client.ts", "password-client.ts", "register-client.ts"]) {
     const src = read(`packages/gateway/src/pages/${file}`);
     const quotes = ['"', "'", "`"];
     const stops = ["?", "$", "{"];
@@ -507,6 +507,21 @@ check("用户旅程：每个后端能力都有入口，每次操作都有反馈"
   mustInclude(account, "setSessionCookie", "Gateway 必须把轮换后的 token 写回 Cookie");
   // 普通用户要有自己的落地页：user 进 /admin 只会撞「无权限」
   mustInclude(account, 'accountRoutes.get("/"', "缺少普通用户的账户首页");
+
+  // 邀请接受端点在 Core 与 Gateway 都存在，但很长一段时间没有任何页面能调用它 ——
+  // 于是"邀请制"实际上等于"只能手工往库里插用户"。
+  const appSrc = read("packages/gateway/src/app.tsx");
+  mustInclude(appSrc, 'app.get("/register"', "缺少注册页路由，邀请码无处可用");
+  mustInclude(
+    read("packages/gateway/src/pages/login.tsx"),
+    'href="/register"',
+    "登录页没有注册入口，用户无从发现邀请注册",
+  );
+  mustInclude(
+    read("packages/gateway/src/pages/register.tsx"),
+    'action="/auth/invite/accept"',
+    "注册页没有提交到邀请接受端点",
+  );
   mustInclude(code("packages/gateway/src/routes/auth.tsx"), 'role === "user"', "登录后未按角色分流");
 
   // 跳转带了参数却没人读，等于操作结果永远不可见
@@ -838,6 +853,28 @@ check("文档：统计数字与实际一致", () => {
     0,
   );
   must(tests > 0, "未统计到任何测试用例");
+
+  // 文档里的相对链接必须指向真实存在的文件。
+  // 这类链接在改名 / 挪目录后不会报错，只会静默变成死链。
+  for (const doc of [
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "docs/deploy.md",
+    "docs/使用指南.md",
+    "docs/runbook.md",
+    "docs/下游集成.md",
+  ]) {
+    if (!exists(doc)) continue;
+    for (const m of read(doc).matchAll(/\]\((?!https?:)([^)#]+\.md)(?:#[^)]*)?\)/g)) {
+      const target = m[1];
+      const dir = doc.includes("/") ? doc.slice(0, doc.lastIndexOf("/")) + "/" : "";
+      const resolved = target.startsWith("../")
+        ? target.replace(/^\.\.\//, "")
+        : dir + target;
+      must(exists(resolved), `${doc} 里的链接指向不存在的文件: ${target}`);
+    }
+  }
 
   const deployDoc = read("docs/deploy.md");
   const claimed = deployDoc.match(/单元测试（(\d+) 个）/)?.[1];

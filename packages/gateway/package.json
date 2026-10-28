@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "build:css": "esbuild src/styles/index.css --bundle --minify --outfile=public/assets/app.css",
-    "build:js": "esbuild src/pages/client.ts --bundle --format=esm --minify --outfile=public/assets/app.js && esbuild src/pages/security-client.ts --bundle --format=esm --minify --outfile=public/assets/security.js && esbuild src/pages/password-client.ts --bundle --format=esm --minify --outfile=public/assets/password.js",
+    "build:js": "esbuild src/pages/client.ts --bundle --format=esm --minify --outfile=public/assets/app.js && esbuild src/pages/security-client.ts --bundle --format=esm --minify --outfile=public/assets/security.js && esbuild src/pages/password-client.ts --bundle --format=esm --minify --outfile=public/assets/password.js && esbuild src/pages/register-client.ts --bundle --format=esm --minify --outfile=public/assets/register.js",
     "build:ssg": "tsx build.tsx",
     "build": "pnpm build:css && pnpm build:js && pnpm build:ssg"
   },

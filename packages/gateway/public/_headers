@@ -9,6 +9,8 @@
   Cache-Control: public, max-age=0, must-revalidate
 /assets/password.js
   Cache-Control: public, max-age=0, must-revalidate
+/assets/register.js
+  Cache-Control: public, max-age=0, must-revalidate
 
 # Security headers for static pages.
 # /login and /mfa are served directly by Assets without passing through

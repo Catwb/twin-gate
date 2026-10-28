@@ -103,7 +103,7 @@ authRoutes.post("/logout", async (c) => {
   return c.redirect("/login", 303);
 });
 
-/** 邀请码接受页：invite_enabled 关闭时直接 404，不暴露端点存在。 */
+/** 邀请码接受：invite_enabled 关闭时直接 404，不暴露端点存在。 */
 authRoutes.post("/invite/accept", async (c) => {
   if (c.env.INVITE_ENABLED !== "true") return c.notFound();
 

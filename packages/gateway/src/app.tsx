@@ -13,6 +13,7 @@ import { securityMiddleware } from "./middleware/security";
 import { csrfMiddleware } from "./middleware/csrf";
 import { LoginPage } from "./pages/login";
 import { MfaPage } from "./pages/mfa";
+import { RegisterPage } from "./pages/register";
 import { NotFoundPage } from "./pages/notFound";
 import { callCore } from "./core/callCore";
 import { setSessionCookie } from "./middleware/session";
@@ -32,6 +33,9 @@ export function createApp() {
   // ---- 公开静态页（生产环境由 Assets 直接命中，Worker 不执行） ----
   app.get("/login", (c) => c.html(<LoginPage />));
   app.get("/mfa", (c) => c.html(<MfaPage />));
+  // 注册页必须 SSR：要读 INVITE_ENABLED 决定显示表单还是「未开放」。
+  // 不进 toSSG（build.tsx），否则开关状态会被烘死在静态文件里。
+  app.get("/register", (c) => c.html(<RegisterPage enabled={c.env.INVITE_ENABLED === "true"} />));
 
   // ---- 认证 ----
   app.route("/auth", authRoutes);
