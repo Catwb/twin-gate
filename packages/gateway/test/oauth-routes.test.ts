@@ -65,6 +65,14 @@ describe("OIDC 端点安全契约", () => {
     expect(oauthSource).toContain("logout/validate");
   });
 
+  it("authorize 把发起会话的 sessionId 传给 Core", () => {
+    // 少了这一行，Core 只能在 token/exchange 里反查"该用户某个活跃会话"，
+    // 多浏览器时会签出错误的 sid。
+    const authorizeStart = oauthSource.indexOf('"/oauth/authorize"');
+    const block = oauthSource.slice(authorizeStart, authorizeStart + 3000);
+    expect(block).toContain("sessionId: session.sessionId");
+  });
+
   it("userinfo 只接受 Bearer 头", () => {
     expect(oauthSource).toContain('startsWith("bearer ")');
   });
