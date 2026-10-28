@@ -618,8 +618,8 @@ pnpm verify
 
 ```
 类型检查    3 包通过
-单元测试    73 个通过
-硬约束      39/39 通过
+单元测试    126 个通过
+硬约束      16/16 通过
 ```
 
 ---
@@ -1026,5 +1026,5 @@ curl https://sso.your-domain.com/.well-known/openid-configuration | grep issuer
 pnpm verify
 ```
 
-包含：类型检查（3 包）+ 单元测试（126 个）+ 硬约束门禁（35 条）。
+包含：类型检查（3 包）+ 单元测试（126 个）+ 硬约束门禁（16 条）。
 CI 里跑这一条即可。
