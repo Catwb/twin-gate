@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { SESSION_COOKIE, SessionStatus, TTL, Role } from "@sso/shared";
 import { callCore } from "../core/callCore";
-import { clearSessionCookie, getSessionCaller, setSessionCookie } from "../middleware/session";
+import { clearSessionCookie, getPendingSession, getSessionCaller, setSessionCookie } from "../middleware/session";
 import { LoginPage } from "../pages/login";
 import type { AppContext } from "../types";
 
@@ -86,15 +86,26 @@ authRoutes.post("/logout", async (c) => {
   // 所以 c.get("sessionId") 在这里恒为 undefined —— 之前就靠它判断，
   // 结果服务端会话从来没被吊销过，只清了 Cookie，旧令牌还能用满 7 天。
   // 必须自己从 Cookie 反查一次会话。
+  // getSessionCaller 走 /session/lookup，那里显式拒绝 mfa_pending ——
+  // 于是在「二次验证」页点登出会查不到会话，只清 Cookie、服务端记录留着。
+  // 这里补一次 pending 专用查询，两种状态都能吊销。
   const session = await getSessionCaller(c);
-  if (session) {
+  const pending = session ? null : await getPendingSession(c);
+
+  const target = session
+    ? { sessionId: session.sessionId, userId: session.userId, role: session.role }
+    : pending
+      ? { sessionId: pending.sessionId, userId: pending.userId, role: null }
+      : null;
+
+  if (target) {
     // best-effort：登出必须无条件成功，吊销失败也只能清 Cookie。
     await callCore(c.env, {
       method: "POST",
       path: "/session/revoke",
-      caller: { userId: session.userId, role: session.role },
-      payload: { sessionId: session.sessionId, reason: "logout" },
-    });
+      caller: target.role ? { userId: target.userId, role: target.role } : null,
+      payload: { sessionId: target.sessionId, reason: "logout" },
+    }).catch(() => undefined);
   }
   clearSessionCookie(c);
 

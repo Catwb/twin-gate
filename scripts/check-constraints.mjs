@@ -489,6 +489,25 @@ check("前端脚本：路径存在、异常不吞、提示可见", () => {
     'action="/auth/mfa/recovery"',
     "MFA 页面缺少恢复码入口，设备丢失后无路可走",
   );
+
+  // 页面上的每个 id 按钮都必须有脚本处理。
+  // 「使用 Passkey」曾经只有一个 id，脚本里一次都没出现过 —— 点了毫无反应，
+  // 而它恰恰是 Passkey 用户在二次验证页的唯一出路。
+  const client = read("packages/gateway/src/pages/client.ts");
+  const mfaPage = read("packages/gateway/src/pages/mfa.tsx");
+  // 正向：按钮本身必须存在（否则下面的循环会空转，检查形同虚设）
+  for (const id of ["passkey-verify", "recovery-toggle"]) {
+    mustInclude(mfaPage, `id="${id}"`, `MFA 页缺少 #${id} 按钮`);
+    mustInclude(client, `"${id}"`, `MFA 页的 #${id} 按钮没有绑定脚本，点了没反应`);
+  }
+
+  // 二次验证页必须有兜底出口：三个入口都可能用不了（设备丢失、恢复码没存），
+  // 没有出口的话用户只能清 Cookie 才能回去。
+  mustInclude(
+    read("packages/gateway/src/pages/mfa.tsx"),
+    'action="/auth/logout"',
+    "MFA 页没有返回登录页的出口，用户会被困住",
+  );
 });
 
 // ============================================================ 7. 用户旅程

@@ -46,6 +46,18 @@ export function MfaPage(props: { error?: string | null }) {
         </form>
 
         <p class="hint" id="mfa-hint"></p>
+
+        {/* 兜底出口。
+            这张页面上的三个入口都可能用不了：验证器不在身边、Passkey 设备丢了、
+            恢复码没保存。没有这个链接的话，用户会被彻底困在这里 ——
+            只能清 Cookie 才能回到登录页。 */}
+        <div class="divider"><span>或</span></div>
+        <form method="post" action="/auth/logout" class="form">
+          <button class="btn btn-secondary" type="submit">返回登录页</button>
+        </form>
+        <p class="hint">
+          换一种登录方式：回到登录页可以直接用 Passkey 免密登录，或换一个账号。
+        </p>
       </section>
     </Layout>
   );

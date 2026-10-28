@@ -42,8 +42,14 @@ async function loginWithPassword(): Promise<void> {
   });
 }
 
-async function loginWithPasskey(): Promise<void> {
-  const button = document.getElementById("passkey-login") as HTMLButtonElement | null;
+/**
+ * Passkey 免密登录。
+ *
+ * 登录页（#passkey-login）与二次验证页（#passkey-verify）共用这一套逻辑 ——
+ * 之前只绑了登录页那个 id，MFA 页的按钮挂了件空壳子，点了完全没反应。
+ */
+async function loginWithPasskey(buttonId: string): Promise<void> {
+  const button = document.getElementById(buttonId) as HTMLButtonElement | null;
   if (!button) return;
 
   if (!window.PublicKeyCredential) {
@@ -139,5 +145,8 @@ function setupRecoveryToggle(): void {
 }
 
 loginWithPassword();
-loginWithPasskey();
+// 登录页与 MFA 页各有一个 Passkey 按钮，两个都要绑上。
+// 少了第二个，用户在「二次验证」页点「使用 Passkey」不会有任何反应。
+loginWithPasskey("passkey-login");
+loginWithPasskey("passkey-verify");
 setupRecoveryToggle();

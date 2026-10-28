@@ -105,6 +105,36 @@ export async function getSessionCaller(c: Context<AppContext>): Promise<(Caller 
   };
 }
 
+/**
+ * 查询 mfa_pending 状态的会话。
+ *
+ * getSessionCaller 走 /session/lookup，那里显式拒绝 mfa_pending（那是硬约束），
+ * 所以二次验证流程必须单独走 /session/lookup-pending。
+ *
+ * 放在 middleware 而不是某个路由文件里：登出与 MFA 升级都要用，
+ * 让 auth 去 import mfa 的路由模块会造成两个路由文件互相依赖。
+ */
+export async function getPendingSession(
+  c: Context<AppContext>,
+): Promise<{ sessionId: string; userId: string } | null> {
+  const token = getCookie(c, SESSION_COOKIE);
+  if (!token) return null;
+
+  const result = await callCore<{
+    valid: boolean;
+    sessionId?: string;
+    userId?: string;
+  }>(c.env, {
+    method: "POST",
+    path: "/session/lookup-pending",
+    payload: { token },
+    ip: c.req.header("cf-connecting-ip") ?? undefined,
+  });
+
+  if (!result.ok || !result.data.valid) return null;
+  return { sessionId: result.data.sessionId!, userId: result.data.userId! };
+}
+
 export function requireRole(role: Role) {
   return createMiddleware<AppContext>(async (c, next) => {
     const caller = c.get("caller");

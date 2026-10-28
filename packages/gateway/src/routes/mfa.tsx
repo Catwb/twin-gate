@@ -1,61 +1,16 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from "hono";
-import { getCookie } from "hono/cookie";
-import { SESSION_COOKIE, SessionStatus, TTL } from "@sso/shared";
+import { SessionStatus, TTL } from "@sso/shared";
 import { callCore } from "../core/callCore";
-import { clearSessionCookie, getSessionCaller, setSessionCookie } from "../middleware/session";
+import { clearSessionCookie, getPendingSession, setSessionCookie } from "../middleware/session";
 import { MfaPage } from "../pages/mfa";
 import type { AppContext } from "../types";
 
 export const mfaRoutes = new Hono<AppContext>();
 
-type CookieContext = Parameters<typeof getCookie>[0];
-
-/**
- * mfa_pending 会话允许访问的端点。
- * requireAuth 会拒绝这个状态，所以这里必须单独处理。
- */
-async function getPendingSession(c: Parameters<typeof getSessionCaller>[0]) {
-  const token = getCookie(c, SESSION_COOKIE);
-  if (!token) return null;
-
-  const result = await callCore<{
-    ok: boolean;
-    valid: boolean;
-    reason?: string;
-    sessionId?: string;
-    userId?: string;
-    role?: string;
-  }>(c.env, {
-    method: "POST",
-    path: "/session/lookup",
-    payload: { token },
-    // 允许 mfa_pending 通过：这是升级流程本身
-    ip: c.req.header("cf-connecting-ip") ?? undefined,
-  });
-
-  if (!result.ok || !result.data.valid) {
-    // mfa_pending 会被 lookupSession 拒绝，需要单独查一次原始会话状态
-    return await getPendingSessionRaw(c, token);
-  }
-  return null;
-}
-
-async function getPendingSessionRaw(c: Parameters<typeof getSessionCaller>[0], token: string) {
-  const result = await callCore<{
-    valid: boolean;
-    sessionId?: string;
-    userId?: string;
-    status?: string;
-  }>(c.env, {
-    method: "POST",
-    path: "/session/lookup-pending",
-    payload: { token },
-    ip: c.req.header("cf-connecting-ip") ?? undefined,
-  });
-  if (!result.ok || !result.data.valid) return null;
-  return { sessionId: result.data.sessionId!, userId: result.data.userId! };
-}
+// getPendingSession 现在在 middleware/session.ts，与登出共用一份实现。
+// 旧实现在这里先查 /session/lookup（对 mfa_pending 必然返回 invalid），
+// 再查 /session/lookup-pending —— 每次都多一轮 D1 查询。
 
 mfaRoutes.post("/mfa", async (c) => {
   const isJson = (c.req.header("content-type") ?? "").includes("application/json");
@@ -154,6 +109,11 @@ mfaRoutes.post("/passkey/verify", async (c) => {
   const challenge = decodeChallenge(body?.clientDataJSON ?? "");
   if (!challenge) return c.json({ ok: false, message: "请求无效" }, 400);
 
+  // 在 /mfa 页点「使用 Passkey」时，浏览器里还留着一条 mfa_pending 会话。
+  // 验证成功后会新建 active 会话并覆盖 Cookie，那条 pending 会话就成了孤儿：
+  // 没人吊销、也没人清理，白占一行。这里先主动吊销它。
+  const pending = await getPendingSession(c);
+
   const result = await callCore<{ ok: boolean; token: string; role: string; mustChangePassword: boolean }>(c.env, {
     method: "POST",
     path: "/passkey/login-verify",
@@ -179,6 +139,16 @@ mfaRoutes.post("/passkey/verify", async (c) => {
   if (!result.ok) {
     if (result.code === "locked") return c.json({ ok: false, message: "尝试次数过多，请稍后再试" }, 429);
     return c.json({ ok: false, message: "Passkey 验证失败" }, 401);
+  }
+
+  // 新会话已建立，把之前那条 mfa_pending 会话吊销掉。
+  // best-effort：吊销失败不影响本次登录成功。
+  if (pending) {
+    await callCore(c.env, {
+      method: "POST",
+      path: "/session/revoke",
+      payload: { sessionId: pending.sessionId, reason: "replaced_by_passkey" },
+    }).catch(() => undefined);
   }
 
   setSessionCookie(c, result.data.token, TTL.session);
