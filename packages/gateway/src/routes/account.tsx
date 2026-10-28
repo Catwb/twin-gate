@@ -77,3 +77,52 @@ accountRoutes.get("/account/password", async (c) => {
     </Layout>,
   );
 });
+
+/**
+ * 提交改密。
+ *
+ * 注意：这个端点在 MFA 门禁之外，因为它服务于"首次登录必须改密"流程，
+ * 而此时用户可能还没绑定任何第二因子。
+ */
+accountRoutes.post("/account/password", async (c) => {
+  const caller = c.get("caller")!;
+  const body = (await c.req.json().catch(() => null)) as {
+    currentPassword?: string;
+    newPassword?: string;
+  } | null;
+
+  if (!body?.currentPassword || !body?.newPassword) {
+    return c.json({ ok: false, code: "bad_request", message: "请求无效" }, 400);
+  }
+
+  const result = await callCore(c.env, {
+    method: "POST",
+    path: "/user/change-password",
+    caller,
+    payload: {
+      userId: caller.userId,
+      currentPassword: body.currentPassword,
+      newPassword: body.newPassword,
+    },
+    ip: c.req.header("cf-connecting-ip") ?? undefined,
+  });
+
+  if (!result.ok) {
+    const messages: Record<string, string> = {
+      invalid_credentials: "当前密码不正确",
+      weak_password: "新密码不满足要求（至少 12 位）",
+      same_password: "新密码不能与当前密码相同",
+      bad_request: "请求无效",
+    };
+    return c.json(
+      {
+        ok: false,
+        code: result.code,
+        message: messages[result.code] ?? "修改失败",
+      },
+      400,
+    );
+  }
+
+  return c.json({ ok: true, redirect: "/admin" });
+});

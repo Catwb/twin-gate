@@ -2,6 +2,9 @@
 /**
  * 幂等地创建第一个超级管理员。
  *
+ * must_change_password 设为 0：密码由部署者在 GitHub Secrets 里自行设定，
+ * 不是系统生成的临时密码，因此不必强制修改。
+ *
  * CI 里运行：已存在任意 super_admin 时直接跳过，可安全重复执行。
  *
  * 环境变量：
@@ -100,7 +103,7 @@ const escapedEmail = normalizedEmail.replace(/'/g, "''");
 
 const sql =
   "INSERT INTO users (id, email, password_hash, role, status, must_change_password, created_at) " +
-  `VALUES ('${id}', '${escapedEmail}', '${passwordHash}', 'super_admin', 'active', 1, ${now})`;
+  `VALUES ('${id}', '${escapedEmail}', '${passwordHash}', 'super_admin', 'active', 0, ${now})`;
 
 try {
   runWrangler(["d1", "execute", "sso-db", TARGET_FLAG, "-y", "--command", sql]);

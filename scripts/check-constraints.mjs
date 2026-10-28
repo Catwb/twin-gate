@@ -451,6 +451,35 @@ check("安全页提示写到常驻可见元素", () => {
   return "ok";
 });
 
+check("改密页 GET 与 POST 都存在", () => {
+  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
+
+  // 之前只写了 GET，前端提交打到不存在的 POST，表现为"修改失败"。
+  if (!account.includes('accountRoutes.get("/account/password"')) {
+    throw new Error("缺少改密页 GET 路由");
+  }
+  if (!account.includes('accountRoutes.post("/account/password"')) {
+    throw new Error("缺少改密提交 POST 路由");
+  }
+  if (!account.includes("/user/change-password")) {
+    throw new Error("POST 未调用 Core 的 change-password 方法");
+  }
+  return "ok";
+});
+
+check("种子超管不强制改密", () => {
+  // 密码由部署者在 GitHub Secrets 里自行设定，不是系统生成的临时密码。
+  for (const file of ["scripts/seed-admin-ci.mjs", "scripts/seed-superadmin.mjs"]) {
+    const script = read(join(ROOT, file));
+    const match = script.match(/must_change_password[\s\S]{0,200}?'active',\s*([01]),/);
+    if (!match) throw new Error(`${file} 中找不到 must_change_password 的值`);
+    if (match[1] !== "0") {
+      throw new Error(`${file} 仍把 must_change_password 设为 1，会强制用户改密`);
+    }
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

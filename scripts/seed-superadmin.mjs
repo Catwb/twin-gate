@@ -42,5 +42,5 @@ const escapedEmail = email.toLowerCase().replace(/'/g, "''");
 
 console.log("-- 由 scripts/seed-superadmin.mjs 生成，执行后请立即删除本文件");
 console.log(
-  `INSERT INTO users (id, email, password_hash, role, status, must_change_password, created_at) VALUES ('${id}', '${escapedEmail}', '${passwordHash}', '${role}', 'active', 1, ${now});`,
+  `INSERT INTO users (id, email, password_hash, role, status, must_change_password, created_at) VALUES ('${id}', '${escapedEmail}', '${passwordHash}', '${role}', 'active', 0, ${now});`,
 );

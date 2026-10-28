@@ -454,7 +454,10 @@ GitHub → **Actions** → 左侧选 **deploy** → **Run workflow**：
 密码：SEED_ADMIN_PASSWORD 的值
 ```
 
-> 首次登录会被强制跳到 `/admin/security` 绑定 MFA，这是超管门禁在工作。
+> 首次登录**不会**强制改密 —— `SEED_ADMIN_PASSWORD` 是部署者自己设定的，
+> 不是系统生成的临时密码，没有必要再改一次。
+>
+> 但登录后会被强制跳到 `/admin/security` 绑定 MFA，这是超管门禁在工作。
 
 #### 如果种子步骤失败
 
