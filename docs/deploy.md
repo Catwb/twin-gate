@@ -865,6 +865,20 @@ RP_ID = "sso.example.com"            # 对
 
 浏览器会抛 `InvalidStateError`。到系统设置里删掉旧的，或换一台设备试。
 
+### 浏览器报特定异常时
+
+| 异常 | 含义与处理 |
+|---|---|
+| `NotReadableError` | **系统凭证管理器拒绝响应**。按顺序检查：① 手机已设置**屏幕锁**（PIN/密码/图案；只有指纹不够）② Chrome 密码管理器已启用 ③ 不在工作资料 / 无痕模式 ④ 换用 Google 密码管理器而非第三方 |
+| `NotAllowedError` | 用户取消，或超过 60 秒未完成指纹/PIN 验证 |
+| `SecurityError` | 当前域名与 `RP_ID` 不匹配（用了 IP、workers.dev 或其它域名） |
+| `InvalidStateError` | 该设备已绑定过此账号，换设备或先在系统设置删掉旧凭证 |
+| `UnknownError` | 系统层未知错误，通常是上面几种的变体 |
+
+> **Passkey 绑不上时的替代路径**：先用 TOTP 完成二次验证。
+> 超管门禁只要求「绑定任意第二因子」，TOTP 同样满足。
+> 之后换设备再补绑 Passkey 即可。
+
 ### 看服务端日志
 
 绑定失败时 Core 会打印真因：

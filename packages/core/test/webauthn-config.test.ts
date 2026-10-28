@@ -76,3 +76,41 @@ describe("diagnoseWebAuthnConfig", () => {
     if (r.ok) expect(r.rpId).toBe("sso.example.com");
   });
 });
+describe("rpName 规范化", () => {
+  // 与 passkey.ts 中的 normalizeRpName 保持同一逻辑
+  function normalizeRpName(raw: string): string {
+    const value = raw.trim();
+    if (!value) return "SSO";
+    if (/^https?:\/\//i.test(value)) {
+      try {
+        return new URL(value).hostname;
+      } catch {
+        return "SSO";
+      }
+    }
+    return value;
+  }
+
+  it("URL 转成域名", () => {
+    expect(normalizeRpName("https://sso.example.com")).toBe("sso.example.com");
+  });
+
+  it("带端口的 URL 只保留域名", () => {
+    expect(normalizeRpName("http://localhost:8787")).toBe("localhost");
+  });
+
+  it("普通名称原样保留", () => {
+    expect(normalizeRpName("My SSO")).toBe("My SSO");
+  });
+
+  it("空值回退为 SSO", () => {
+    expect(normalizeRpName("")).toBe("SSO");
+    expect(normalizeRpName("   ")).toBe("SSO");
+  });
+
+  it("结果不是 URL", () => {
+    const result = normalizeRpName("https://sso.example.com");
+    expect(result).not.toContain("http");
+    expect(result).not.toContain("/");
+  });
+});

@@ -110,6 +110,11 @@ securityRoutes.get("/security", async (c) => {
       <p class="hint">
         超级管理员必须完成二次验证绑定后才能进入管理后台。
       </p>
+      <p class="hint">
+        Passkey 绑定失败时（例如手机未设置屏幕锁），可以先
+        <strong>启用 TOTP</strong> 完成二次验证 —— 同样能满足超管门禁，
+        之后再换设备补绑 Passkey。
+      </p>
     </AdminLayout>,
   );
 });

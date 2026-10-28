@@ -104,7 +104,9 @@ export async function buildRegistrationOptions(
   const existing = await listPasskeys(db, params.userId);
   const options = await generateRegistrationOptions({
     rpID: params.rpId,
-    rpName: params.rpName,
+    // rpName 是显示在系统弹窗里的名字，不能是 URL。
+    // 调用方传进来的可能是 ISSUER（https://...），这里兜底成域名或固定名。
+    rpName: normalizeRpName(params.rpName),
     userID: encodeUserId(params.userId),
     userName: params.email,
     attestationType: "none",
@@ -235,6 +237,24 @@ export async function completeAuthentication(
     .where(eq(passkeys.id, record.id));
 
   return { ok: true, userId: record.userId };
+}
+
+/**
+ * rpName 会直接显示在系统的通行密钥弹窗里（"X 想要创建通行密钥"）。
+ * 传 URL 过去用户会看到一串网址，很难辨认。
+ */
+function normalizeRpName(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "SSO";
+  // 是 URL 就取域名
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      return new URL(value).hostname;
+    } catch {
+      return "SSO";
+    }
+  }
+  return value;
 }
 
 // ---- 编解码 ----

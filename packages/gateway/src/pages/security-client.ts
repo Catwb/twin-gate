@@ -45,6 +45,10 @@ function describeWebAuthnException(name: string, message: string): string {
       return "此浏览器或设备不支持所需的验证方式";
     case "AbortError":
       return "操作被中断，请重试";
+    case "NotReadableError":
+      return "系统凭证管理器无法响应。请检查：① 手机已设置屏幕锁（PIN/密码，仅有指纹不够）② Chrome 的密码管理器已启用 ③ 不是在工作资料或无痕模式下操作";
+    case "UnknownError":
+      return "系统返回未知错误。可尝试换一种验证方式（如改用验证器 App 的 TOTP）";
     default:
       return `绑定失败：${name} ${message ? "- " + message : ""}`.trim();
   }
