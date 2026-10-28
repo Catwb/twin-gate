@@ -819,8 +819,8 @@ curl -X POST https://<core>/internal/passkey/config \
 ```json
 {
   "ok": true,
-  "origin": "https://sso.furryawa.com",
-  "rpId": "sso.furryawa.com",
+  "origin": "https://sso.example.com",
+  "rpId": "sso.example.com",
   "configuredRaw": { "issuer": "...", "rpIdRaw": "..." }
 }
 ```
@@ -838,8 +838,8 @@ curl -X POST https://<core>/internal/passkey/config \
 **1. 在 workers.dev 域名上测试**
 
 ```
-配置 rpId = sso.furryawa.com
-实际访问 https://twin-gate.xxx.workers.dev
+配置 rpId = sso.example.com
+实际访问 https://<worker-name>.<subdomain>.workers.dev
 → SecurityError，绑定必然失败
 ```
 
@@ -848,7 +848,7 @@ curl -X POST https://<core>/internal/passkey/config \
 **2. `ISSUER` 带了结尾斜杠**
 
 ```toml
-ISSUER = "https://sso.furryawa.com/"   # 末尾多了 /
+ISSUER = "https://sso.example.com/"   # 末尾多了 /
 ```
 
 说明：代码里已做 `normalizeOrigin()` 规范化，会去掉斜杠与路径。
@@ -857,8 +857,8 @@ ISSUER = "https://sso.furryawa.com/"   # 末尾多了 /
 **3. `RP_ID` 写了协议**
 
 ```toml
-RP_ID = "https://sso.furryawa.com"   # 错，不能带协议
-RP_ID = "sso.furryawa.com"            # 对
+RP_ID = "https://sso.example.com"   # 错，不能带协议
+RP_ID = "sso.example.com"            # 对
 ```
 
 **4. 设备上已有同一账号的旧 Passkey**
