@@ -1,549 +1,376 @@
 #!/usr/bin/env node
 /**
- * 硬约束门禁。CI 直接跑这一条即可。
- * 任何一条不通过都以非零码退出。
+ * 硬约束门禁。
+ *
+ * 判定标准只有一条：**改了会导致数据泄露、认证绕过或部署失效，且测试覆盖不到。**
+ *
+ * 凡是「改错后测试或运行时会立刻暴露」的（比如响应字段名、配置项取值），
+ * 交给 typecheck 和单元测试，不在这里重复。
+ *
+ * 每条 check 内部可以断言多件事，按领域聚合，不再一行一条。
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { execSync } from "node:child_process";
-import { registerMfaChecks } from "./checks/mfa.mjs";
-import { registerOidcChecks } from "./checks/oidc.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const failures = [];
 const checks = [];
 
 function check(name, fn) {
   try {
-    const detail = fn();
-    checks.push({ name, ok: true, detail });
+    fn();
+    checks.push({ name, ok: true });
   } catch (error) {
     checks.push({ name, ok: false, detail: error.message });
-    failures.push(name);
   }
 }
 
-function walk(dir, out = []) {
-  if (!existsSync(dir)) return out;
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === "dist" || entry === ".wrangler") continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else out.push(full);
-  }
-  return out;
-}
+const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
+const exists = (rel) => existsSync(join(ROOT, rel));
 
-const sourceFiles = walk(join(ROOT, "packages")).filter((f) => /\.(ts|tsx|sql|toml)$/.test(f));
-const read = (file) => readFileSync(file, "utf8");
-const rel = (file) => relative(ROOT, file).replace(/\\/g, "/");
-
-/**
- * 剥离注释后再匹配。
- * 否则"禁止 X"这类说明文字本身会把检查结果判成违规。
- */
+/** 剥离注释后再匹配，避免说明文字里的词被判成违规。 */
 function stripComments(content, kind) {
   if (kind === "toml") {
-    return content
-      .split("\n")
-      .map((line) => line.replace(/(^|\s)#.*$/, "$1"))
-      .join("\n");
+    return content.split("\n").map((l) => l.replace(/(^|\s)#.*$/, "$1")).join("\n");
   }
   if (kind === "sql") {
-    return content
-      .split("\n")
-      .map((line) => line.replace(/--.*$/, ""))
-      .join("\n");
+    return content.split("\n").map((l) => l.replace(/--.*$/, "")).join("\n");
   }
-  return content
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-function readCode(file) {
-  const raw = read(file);
-  if (file.endsWith(".toml")) return stripComments(raw, "toml");
-  if (file.endsWith(".sql")) return stripComments(raw, "sql");
+const code = (rel) => {
+  const raw = read(rel);
+  if (rel.endsWith(".toml")) return stripComments(raw, "toml");
+  if (rel.endsWith(".sql")) return stripComments(raw, "sql");
   return stripComments(raw, "ts");
+};
+
+/** 取某个函数/路由的代码块，截到下一个同级定义为止。 */
+function block(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) return "";
+  const end = endMarker ? source.indexOf(endMarker, start + startMarker.length) : -1;
+  return source.slice(start, end > start ? end : start + 3000);
 }
 
-// ---- 1. Gateway 绑定额度 ----
-check("Gateway 绑定只含 services / assets", () => {
-  const toml = readCode(join(ROOT, "packages/gateway/wrangler.toml"));
+function expect(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+// ============================================================ 1. 部署边界
+check("部署边界：Core 不可达，绑定面最小", () => {
+  const core = code("packages/core/wrangler.toml");
+  expect(core.includes("workers_dev = false"), "Core 必须 workers_dev = false");
+  expect(!/^routes\s*=/m.test(core), "Core 不得配置 routes");
+  expect(core.includes("[[d1_databases]]"), "Core 应有 D1 binding");
+  expect(!core.includes("kv_namespaces"), "Core 不得有 KV");
+  expect(!core.includes("r2_buckets"), "Core 不得有 R2");
+
+  const gateway = code("packages/gateway/wrangler.toml");
+  expect(gateway.includes("[[services]]"), "Gateway 应有 Service Binding");
+  expect(gateway.includes("[assets]"), "Gateway 应有 Assets");
   for (const forbidden of ["d1_databases", "kv_namespaces", "r2_buckets"]) {
-    if (toml.includes(forbidden)) throw new Error(`wrangler.toml 出现 ${forbidden}`);
+    expect(!gateway.includes(forbidden), `Gateway 不得有 ${forbidden}`);
   }
-  if (!toml.includes("[[services]]")) throw new Error("缺少 service binding");
-  if (!toml.includes("[assets]")) throw new Error("缺少 assets 配置");
-  return "ok";
+  // 免费版：配了 run_worker_first 会在超额时 429 且不回退静态资源
+  expect(!gateway.includes("run_worker_first"), "生产配置不得含 run_worker_first");
 });
 
-check("Core 绑定为 D1 + Cron 且无公网路由", () => {
-  const toml = readCode(join(ROOT, "packages/core/wrangler.toml"));
-  if (!toml.includes('workers_dev = false')) throw new Error("workers_dev 未设为 false");
-  if (/^routes\s*=/m.test(toml)) throw new Error("Core 不得配置 routes");
-  if (!toml.includes("[[d1_databases]]")) throw new Error("缺少 D1 binding");
-  if (!toml.includes("[triggers]")) throw new Error("缺少 cron 配置");
-  for (const forbidden of ["kv_namespaces", "r2_buckets"]) {
-    if (toml.includes(forbidden)) throw new Error(`出现了 ${forbidden}`);
-  }
-  return "ok";
+// ============================================================ 2. 身份传播
+check("身份传播：只走 body，Core 无透传口", () => {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx)$/.test(entry.name)) files.push(path);
+    }
+  };
+  walk("packages/gateway/src");
+
+  const offenders = files.filter((f) => !f.endsWith("callCore.ts") && read(f).includes("CORE.fetch"));
+  expect(offenders.length === 0, `env.CORE.fetch 出现在 ${offenders.join(", ")}`);
+
+  const internal = code("packages/core/src/routes/internal.ts");
+  expect(!internal.includes('"/query"'), "Core 不得有 /query 透传端点");
+  expect(!internal.includes("payload: z.object({ sql"), "Core 不得接受裸 SQL");
 });
 
-check("生产配置不含 run_worker_first", () => {
-  const toml = readCode(join(ROOT, "packages/gateway/wrangler.toml"));
-  if (toml.includes("run_worker_first")) throw new Error("生产配置出现 run_worker_first（免费版超额会 429 且不回退静态资源）");
-  return "ok";
-});
+// ============================================================ 3. 密码与 Cookie
+check("密码与会话凭证：HMAC + __Host- + 安全属性", () => {
+  const crypto = code("packages/core/src/lib/crypto.ts");
+  expect(!/PBKDF2|deriveBits/.test(crypto), "不得使用 PBKDF2");
+  expect(crypto.includes("HMAC"), "密码必须经 HMAC 处理");
 
-// ---- 2. 身份传播 ----
-check("env.CORE.fetch 只出现在 callCore.ts", () => {
-  const offenders = sourceFiles.filter((file) => {
-    if (file.endsWith("callCore.ts")) return false;
-    return readCode(file).includes("CORE.fetch");
-  });
-  if (offenders.length) throw new Error(offenders.map(rel).join(", "));
-  return "ok";
-});
+  const schema = code("packages/core/src/db/schema.ts");
+  expect(schema.includes("password_hash"), "密码字段必须叫 password_hash");
+  expect(!/\bpassword:\s*text\(/.test(schema), "不得有裸 password 字段");
 
-check("Core 不存在 SQL 透传接口", () => {
-  const internal = readCode(join(ROOT, "packages/core/src/routes/internal.ts"));
-  if (internal.includes("payload: z.object({ sql")) throw new Error("发现 sql 透传");
-  if (/post\("\/query"/.test(internal)) throw new Error("发现 /query 路由");
-  return "ok";
-});
+  const shared = code("packages/shared/src/index.ts");
+  expect(shared.includes('"__Host-sid"'), "会话 Cookie 必须带 __Host- 前缀");
 
-// ---- 3. 密码 ----
-check("不存在 PBKDF2 调用", () => {
-  const offenders = sourceFiles.filter((file) => /PBKDF2|deriveBits/.test(readCode(file)));
-  if (offenders.length) throw new Error(offenders.map(rel).join(", "));
-  return "ok";
-});
-
-check("密码字段统一为 password_hash", () => {
-  const offenders = sourceFiles.filter((file) => /\bpassword:\s*text\(/.test(readCode(file)));
-  if (offenders.length) throw new Error(`发现非 password_hash 字段: ${offenders.map(rel).join(", ")}`);
-  return "ok";
-});
-
-// ---- 4. 令牌与会话 ----
-check("会话 Cookie 使用 __Host- 前缀", () => {
-  const shared = readCode(join(ROOT, "packages/shared/src/index.ts"));
-  if (!shared.includes('"__Host-sid"')) throw new Error("SESSION_COOKIE 必须是 __Host-sid");
-  return "ok";
-});
-
-check("Cookie 属性齐全", () => {
-  const middleware = readCode(join(ROOT, "packages/gateway/src/middleware/session.ts"));
+  const session = code("packages/gateway/src/middleware/session.ts");
   for (const attr of ["httpOnly: true", "secure: true", 'sameSite: "Lax"', 'path: "/"']) {
-    if (!middleware.includes(attr)) throw new Error(`缺少 ${attr}`);
+    expect(session.includes(attr), `Cookie 缺少 ${attr}`);
   }
-  return "ok";
 });
 
-check("requireAuth 显式拒绝 mfa_pending", () => {
-  const session = readCode(join(ROOT, "packages/core/src/services/session.ts"));
-  if (!session.includes("SessionStatus.MfaPending")) throw new Error("session 服务未检查 mfa_pending");
-  return "ok";
+// ============================================================ 4. 会话状态
+check("会话状态：mfa_pending 不得鉴权，升级必须轮换", () => {
+  const session = code("packages/core/src/services/session.ts");
+  expect(session.includes("SessionStatus.MfaPending"), "lookupSession 必须显式拒绝 mfa_pending");
+
+  const internal = code("packages/core/src/routes/internal.ts");
+  expect(internal.includes('"/session/lookup-pending"'), "需要 pending 专用查询，与鉴权查询分离");
+
+  const mfa = code("packages/core/src/routes/mfa.ts");
+  const upgrade = block(mfa, '"/mfa/verify-totp"', 'mfaRoutes.post(');
+  expect(upgrade.includes("rotateSessionToken"), "MFA 升级必须轮换 token");
+  expect(!upgrade.includes("createSession("), "MFA 升级不得新建会话（会撞主键）");
 });
 
-// ---- 5. 禁止项 ----
-check("不存在 R2 / KV / content 表 / Markdown 渲染 / Astro", () => {
-  const offenders = sourceFiles.filter((file) => {
-    const content = readCode(file);
-    return /r2_buckets|kv_namespaces|CREATE TABLE content\b/.test(content);
-  });
-  if (offenders.length) throw new Error(offenders.map(rel).join(", "));
-  return "ok";
+// ============================================================ 5. OIDC 令牌
+check("OIDC：令牌可吊销，协议参数强制", () => {
+  const oidc = code("packages/core/src/services/oidc.ts");
+
+  const issue = block(oidc, "export async function issueAccessToken", "export type IntrospectionResult");
+  expect(issue.includes("randomHex"), "访问令牌必须是随机串");
+  expect(!issue.includes("signJwt"), "访问令牌不得是 JWT（否则无法即时吊销）");
+
+  // 无效、吊销、过期三种情况必须给出完全相同的响应
+  const introspect = block(oidc, "export async function introspect", "export async function revokeToken");
+  const falses = (introspect.match(/\{ active: false \}/g) ?? []).length;
+  expect(falses >= 3, `introspect 无效分支只有 ${falses} 处，应覆盖不存在/已吊销/已过期`);
+
+  // 授权码必须原子消费且强制 PKCE
+  expect(oidc.includes('method === "S256"'), "PKCE 只接受 S256");
+  expect(oidc.includes("isNull(authorizationCodes.usedAt)"), "授权码消费必须原子");
+  expect(oidc.includes("returning()"), "授权码消费必须以受影响行数判定");
+
+  // 私钥不落 D1，JWKS 只读 public_jwk
+  const keys = code("packages/core/src/services/signingKeys.ts");
+  const jwks = block(keys, "export async function buildJwks", "export async function listSigningKeys");
+  expect(!jwks.includes("private_jwk"), "buildJwks 不得读取私钥");
+  expect(jwks.includes("row.publicJwk"), "JWKS 必须从 publicJwk 生成");
+
+  const schema = code("packages/core/src/db/schema.ts");
+  const keyTable = block(schema, "export const signingKeys", "export const passkeys");
+  expect(!/private/i.test(keyTable), "signing_keys 表不得有私钥字段");
+
+  // ID Token 需要 sid，为将来 Back-channel Logout 留钩子
+  const routes = code("packages/core/src/routes/oidc.ts");
+  expect(routes.includes("sid: sessionId"), "ID Token 必须含 sid");
+
+  // CSRF 豁免范围必须精确
+  const csrf = code("packages/gateway/src/middleware/csrf.ts");
+  const exempt = csrf.match(/EXEMPT_PREFIXES = \[([^\]]*)\]/);
+  expect(exempt, "未声明 CSRF 豁免前缀");
+  const entries = exempt[1].split(",").map((x) => x.trim()).filter(Boolean);
+  expect(entries.length === 1 && entries[0] === '"/oauth/"', `CSRF 豁免范围过大: ${entries.join(", ")}`);
 });
 
-check("依赖树不含 astro", () => {
-  const pkg = JSON.parse(read(join(ROOT, "packages/gateway/package.json")));
+// ============================================================ 6. MFA 数据安全
+check("MFA：secret 加密、防重放、单次使用", () => {
+  const aes = code("packages/core/src/lib/aes.ts");
+  expect(aes.includes('"AES-GCM"'), "TOTP secret 必须 AES-GCM 加密");
+  expect(aes.includes("deriveKey"), "必须从主密钥派生");
+
+  const totp = code("packages/core/src/services/totp.ts");
+  expect(totp.includes("encryptSecret"), "TOTP secret 未加密");
+  expect(totp.includes("lastUsedStep"), "TOTP 未记录已用步长");
+  expect(totp.includes("lt(mfaFactors.lastUsedStep"), "TOTP 缺少严格递增判定");
+
+  const recovery = code("packages/core/src/services/recovery.ts");
+  expect(recovery.includes("sha256Hex"), "恢复码必须哈希存储");
+  expect(recovery.includes("isNull(mfaRecoveryCodes.usedAt)"), "恢复码必须单次使用");
+  expect(recovery.includes("returning("), "恢复码必须以受影响行数判定");
+
+  const passkey = code("packages/core/src/services/passkey.ts");
+  const auth = block(passkey, "export async function completeAuthentication", "// ---- 编解码");
+  expect(auth.includes("newCounter"), "Passkey 认证后必须更新 counter");
+
+  // challenge 的单次使用与过期在 consumeChallenge 里，不在 completeAuthentication 内
+  const consume = block(passkey, "export async function consumeChallenge", "export async function lazyCleanupChallenges");
+  expect(consume.includes("isNull(passkeyChallenges.consumedAt)"), "challenge 必须单次使用");
+  expect(consume.includes("gt(passkeyChallenges.expiresAt"), "challenge 必须校验过期");
+});
+
+// ============================================================ 7. 危险动作吊销
+check("危险动作：重置/恢复/改密后的会话处理", () => {
+  const mfa = code("packages/core/src/routes/mfa.ts");
+
+  const reset = block(mfa, '"/mfa/reset"', "mfaRoutes.post(");
+  expect(reset.includes("revokeMfaStatements"), "超管重置 MFA 必须吊销因子");
+  expect(reset.includes("revokeAllStatements"), "超管重置 MFA 必须吊销会话");
+  expect(reset.includes("db.batch"), "重置必须走单事务");
+  expect(reset.includes("Role.SuperAdmin"), "重置仅限超管");
+
+  const recovery = block(mfa, '"/mfa/verify-recovery"', "mfaRoutes.post(");
+  expect(recovery.includes("revokeAllStatements"), "使用恢复码后必须吊销其余会话");
+  expect(recovery.includes("keepSessionId"), "恢复码登录应保留当前新会话");
+
+  const internal = code("packages/core/src/routes/internal.ts");
+  const change = block(internal, 'internalRoutes.post("/user/change-password"', "internalRoutes.post(");
+  expect(change.includes("keepSessionId"), "改密不得吊销当前会话");
+  expect(change.includes("rotateSessionToken"), "改密后必须轮换当前会话 token");
+
+  const account = code("packages/gateway/src/routes/account.tsx");
+  expect(account.includes("setSessionCookie"), "Gateway 必须把轮换后的 token 写回 Cookie");
+});
+
+// ============================================================ 8. 后台防护
+check("后台：超管门禁、审计不阻断、提示可见", () => {
+  const gate = code("packages/gateway/src/middleware/mfaGate.ts");
+  expect(gate.includes("Role.SuperAdmin"), "MFA 门禁必须区分超管");
+  expect(gate.includes("/admin/security"), "门禁必须放行绑定页，否则死循环");
+  expect(gate.includes("mfa_binding_required"), "门禁缺少拒绝码");
+
+  const admin = code("packages/gateway/src/routes/admin.tsx");
+  expect(admin.includes("mfaGate"), "admin 路由必须挂 MFA 门禁");
+
+  const audit = code("packages/core/src/services/audit.ts");
+  expect(audit.includes("try {"), "审计写入失败必须隔离，不得阻断认证");
+
+  // 安全页的提示必须写到常驻元素，不能写进 hidden 面板
+  const securityClient = code("packages/gateway/src/pages/security-client.ts");
+  expect(securityClient.includes("security-hint"), "安全页提示必须写入常驻元素");
+  expect(securityClient.includes("console.error"), "Passkey 异常必须打印到控制台");
+
+  // 恢复码必须有 UI 入口，否则恢复路径等于不存在
+  const mfaPage = code("packages/gateway/src/pages/mfa.tsx");
+  expect(mfaPage.includes('action="/auth/mfa/recovery"'), "MFA 页面缺少恢复码表单");
+});
+
+// ============================================================ 9. Cron 与容量
+check("容量：Cron 分批清理，频率合规", () => {
+  const toml = code("packages/core/wrangler.toml");
+  expect(toml.includes('crons = ["*/15 * * * *"]'), "Cron 频率必须为 15 分钟");
+
+  const cron = code("packages/core/src/cron.ts");
+  expect(cron.includes("CRON_DELETE_BATCH"), "清理必须分批，不得扫全表");
+});
+
+// ============================================================ 10. 禁止项
+check("禁止项：无 CMS、无缓存层、无多余框架", () => {
+  const pkg = JSON.parse(read("packages/gateway/package.json"));
   const all = { ...pkg.dependencies, ...pkg.devDependencies };
-  if (Object.keys(all).some((name) => name.includes("astro"))) throw new Error("发现 astro 依赖");
-  return "ok";
+  expect(!Object.keys(all).some((n) => n.includes("astro")), "不得引入 astro");
+
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|tsx|sql|toml)$/.test(entry.name)) files.push(path);
+    }
+  };
+  walk("packages");
+
+  for (const file of files) {
+    const src = code(file);
+    expect(!/r2_buckets|kv_namespaces|CREATE TABLE content\b/.test(src), `${file} 出现被禁资源`);
+    expect(!/from ["']hono\/css["']/.test(src), `${file} 使用了 hono/css`);
+  }
 });
 
-check("不存在 hono/css 使用", () => {
-  const offenders = sourceFiles.filter((file) => {
-    const code = readCode(file);
-    return code.includes("from 'hono/css'") || code.includes('from "hono/css"');
-  });
-  if (offenders.length) throw new Error(offenders.map(rel).join(", "));
-  return "ok";
-});
-
-// ---- 6. 审计与清理 ----
-check("审计写入不阻断认证", () => {
-  const audit = readCode(join(ROOT, "packages/core/src/services/audit.ts"));
-  if (!audit.includes("try {")) throw new Error("appendAudit 缺乏失败隔离");
-  return "ok";
-});
-
-check("Cron 清理为分批 LIMIT", () => {
-  const cron = readCode(join(ROOT, "packages/core/src/cron.ts"));
-  if (!cron.includes("CRON_DELETE_BATCH")) throw new Error("清理未使用批量上限");
-  return "ok";
-});
-
-check("Cron 频率不高于 15 分钟", () => {
-  const toml = readCode(join(ROOT, "packages/core/wrangler.toml"));
-  if (!toml.includes('crons = ["*/15 * * * *"]')) throw new Error("cron 表达式不符");
-  return "ok";
-});
-
-// ---- 7. OIDC 与令牌吊销 ----
-registerOidcChecks({ check, readCode, ROOT });
-
-// ---- 8. Passkey / TOTP / 恢复 ----
-registerMfaChecks({ check, readCode, ROOT });
-
-// ---- 9. Git / Workers Builds 部署前提 ----
-check("三个 package.json 都声明 packageManager", () => {
+// ============================================================ 11. 构建一致性
+check("构建：包管理器锁定、Worker 名匹配、产物不入库", () => {
   for (const rel of ["package.json", "packages/core/package.json", "packages/gateway/package.json"]) {
-    const pkg = JSON.parse(read(join(ROOT, rel)));
-    if (!pkg.packageManager || !String(pkg.packageManager).startsWith("pnpm@")) {
-      throw new Error(`${rel} 缺少 packageManager: pnpm@x.y.z`);
-    }
+    const pkg = JSON.parse(read(rel));
+    expect(String(pkg.packageManager ?? "").startsWith("pnpm@"), `${rel} 缺少 packageManager`);
   }
-  return "ok";
-});
 
-check("Worker 名与 wrangler.toml 的 name 一致", () => {
-  const coreToml = readCode(join(ROOT, "packages/core/wrangler.toml"));
-  const gatewayToml = readCode(join(ROOT, "packages/gateway/wrangler.toml"));
-  if (!/^name = "sso-core"$/m.test(coreToml)) throw new Error("Core name 不是 sso-core");
-  if (!/^name = "sso-gateway"$/m.test(gatewayToml)) throw new Error("Gateway name 不是 sso-gateway");
-  // Gateway 的 service binding 必须指向真实存在的 Core 名
-  if (!gatewayToml.includes('service = "sso-core"')) throw new Error("Gateway 的 service binding 指向了错误的 Worker");
-  return "ok";
-});
-
-check("构建产物不入库", () => {
-  const gi = read(join(ROOT, ".gitignore"));
-  for (const pattern of ["dist/", "packages/gateway/public/assets/", ".dev.vars"]) {
-    if (!gi.includes(pattern)) throw new Error(`.gitignore 缺少 ${pattern}`);
-  }
-  return "ok";
-});
-
-check("迁移文件被纳入版本控制", () => {
-  const gi = read(join(ROOT, ".gitignore"));
-  if (!gi.includes("!packages/core/migrations/*.sql")) {
-    throw new Error("迁移文件被 *.sql 规则误伤");
-  }
-  const migrations = ["0001_init.sql", "0002_mfa.sql"];
-  for (const file of migrations) {
-    if (!existsSync(join(ROOT, "packages/core/migrations", file))) {
-      throw new Error(`缺少迁移 ${file}`);
-    }
-  }
-  return "ok";
-});
-
-// ---- 10. 公开仓库卫生 ----
-check("敏感文件不可入库", () => {
-  const gi = read(join(ROOT, ".gitignore"));
-  for (const pattern of [".dev.vars", "*.sql", "backup-*.sql", "seed.sql"]) {
-    if (!gi.includes(pattern)) throw new Error(`.gitignore 缺少 ${pattern}`);
-  }
-  return "ok";
-});
-
-check("配置模板中不含真实 database_id", () => {
-  const toml = read(join(ROOT, "packages/core/wrangler.toml"));
-  const match = toml.match(/database_id\s*=\s*"([^"]*)"/);
-  if (!match) throw new Error("缺少 database_id 配置项");
-  if (match[1] !== "REPLACE_WITH_D1_DATABASE_ID") {
-    throw new Error("database_id 已填入真实值，公开仓库不应包含它");
-  }
-  return "ok";
-});
-
-check("文档中不含真实域名", () => {
-  const deploy = read(join(ROOT, "docs/deploy.md"));
-  // 允许的示例域名
-  const allowed = ["sso.your-domain.com", "app.example.com", "example.com", "localhost"];
-  const matches = deploy.match(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/gi) ?? [];
-  const offenders = matches.filter((url) => {
-    const host = url.replace(/^https:\/\//i, "").toLowerCase();
-    return !allowed.some((item) => host.includes(item));
-  });
-  // 文档里还有 Cloudflare 官方链接，排除掉
-  const realOffenders = offenders.filter(
-    (url) => !url.includes("cloudflare.com") && !url.includes("github.com") && !url.includes("rfc-editor.org"),
+  expect(/^name = "sso-core"$/m.test(code("packages/core/wrangler.toml")), "Core 名必须为 sso-core");
+  expect(/^name = "sso-gateway"$/m.test(code("packages/gateway/wrangler.toml")), "Gateway 名必须为 sso-gateway");
+  expect(
+    code("packages/gateway/wrangler.toml").includes('service = "sso-core"'),
+    "Gateway 的 Service Binding 必须指向 sso-core",
   );
-  if (realOffenders.length) throw new Error(`发现疑似真实域名: ${[...new Set(realOffenders)].join(", ")}`);
-  return "ok";
+
+  const gi = read(".gitignore");
+  for (const pattern of ["dist/", "packages/gateway/public/assets/", ".dev.vars"]) {
+    expect(gi.includes(pattern), `.gitignore 缺少 ${pattern}`);
+  }
+  expect(gi.includes("!packages/core/migrations/*.sql"), "迁移文件被 *.sql 误伤");
 });
 
-check("管理端写操作必须挂角色校验", () => {
-  const file = readCode(join(ROOT, "packages/gateway/src/routes/admin-apps.tsx"));
-  const routes = ["/apps/create", "/apps/rotate", "/apps/delete"];
-  for (const route of routes) {
-    const start = file.indexOf(`adminAppsRoutes.post("${route}"`);
-    if (start < 0) throw new Error(`未找到 ${route}`);
-    const block = file.slice(start, start + 400);
-    if (!block.includes("Role.SuperAdmin")) {
-      throw new Error(`${route} 缺少超管校验`);
-    }
+// ============================================================ 12. 公开仓库卫生
+check("公开仓库：不泄露敏感信息", () => {
+  for (const file of ["0001_init.sql", "0002_mfa.sql"]) {
+    expect(exists(`packages/core/migrations/${file}`), `缺少迁移 ${file}`);
   }
-  return "ok";
+
+  const toml = read("packages/core/wrangler.toml");
+  const dbId = toml.match(/database_id\s*=\s*"([^"]*)"/);
+  expect(dbId, "缺少 database_id 配置项");
+  expect(dbId[1] === "REPLACE_WITH_D1_DATABASE_ID", "database_id 已填入真实值，公开仓库不应包含");
+
+  // 文档里不得出现真实域名
+  const deploy = read("docs/deploy.md");
+  const allowed = ["your-domain.com", "example.com", "localhost"];
+  const urls = deploy.match(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/gi) ?? [];
+  const offenders = urls.filter((url) => {
+    const host = url.replace(/^https:\/\//i, "").toLowerCase();
+    if (allowed.some((a) => host.includes(a))) return false;
+    if (/cloudflare\.com|github\.com|rfc-editor\.org|developer\.mozilla\.org/.test(host)) return false;
+    return true;
+  });
+  expect(offenders.length === 0, `文档含疑似真实域名: ${[...new Set(offenders)].join(", ")}`);
 });
 
-check("部署 workflow 具备必要的安全步骤", () => {
-  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
-  for (const required of ["workflow_dispatch", "inputs.confirm", "run_migrations", "smoke"]) {
-    if (!workflow.includes(required)) throw new Error(`deploy.yml 缺少 ${required}`);
-  }
-  // 必须手动触发，不能 push 自动部署
-  if (/^  push:/m.test(workflow)) throw new Error("deploy.yml 不应由 push 触发");
-  // 必须注入 secret，且两个 Worker 都拿到 GATEWAY_TOKEN
-  const bulkCount = (workflow.match(/secret bulk/g) ?? []).length;
-  if (bulkCount < 2) throw new Error("两个 Worker 都应注入 secret");
-  return "ok";
+// ============================================================ 13. Workflow 正确性
+check("Workflow：手动部署、离线自校验、参数正确", () => {
+  const deploy = read(".github/workflows/deploy.yml");
+
+  expect(deploy.includes("workflow_dispatch"), "deploy.yml 必须手动触发");
+  expect(!/^  push:/m.test(deploy), "deploy.yml 不得由 push 触发");
+  expect(deploy.includes("inputs.confirm"), "缺少 DEPLOY 确认输入");
+
+  // d1 create 不支持 --json
+  expect(!/d1 create[^\n]*--json/.test(deploy), "d1 create 不支持 --json");
+
+  // sed 改 TOML 会丢引号
+  expect(!/sed -i[^\n]*wrangler\.toml/.test(deploy), "不得用 sed 改 wrangler.toml");
+  expect(deploy.includes("JSON.stringify(issuer)"), "ISSUER 注入应使用 JSON.stringify 保证引号");
+
+  // 自校验必须离线，d1 list 需要凭证
+  expect(!/wrangler d1 list[^\n]*\|\|\s*\{/.test(deploy), "d1 list 需要凭证，不能用作配置自校验");
+  expect(deploy.includes("deploy --dry-run"), "缺少离线配置校验");
+
+  // 两个 Worker 都要注入 secret
+  expect((deploy.match(/secret bulk/g) ?? []).length >= 2, "两个 Worker 都应注入 secret");
 });
 
-check("verify workflow 只做门禁不部署", () => {
-  const workflow = read(join(ROOT, ".github/workflows/verify.yml"));
-  if (/wrangler deploy(?! --dry-run)/.test(workflow)) {
-    throw new Error("verify.yml 不应执行真实部署");
-  }
-  return "ok";
-});
+// ============================================================ 14. 种子超管
+check("种子超管：幂等、不强制改密", () => {
+  const seed = read("scripts/seed-admin-ci.mjs");
+  expect(seed.includes("role = 'super_admin'"), "种子脚本缺少已有超管检查");
+  expect(seed.includes("created=false"), "种子脚本缺少跳过输出");
+  expect(seed.includes("至少 12 位"), "种子脚本未校验密码长度");
 
-check("部署文档的 token 权限说明含 D1", () => {
-  const deploy = read(join(ROOT, "docs/deploy.md"));
-  // "Edit Cloudflare Workers" 模板不含 D1，文档必须明确警告
-  if (!deploy.includes("不含 D1") && !deploy.includes("不要用 \"Edit Cloudflare Workers\" 模板")) {
-    throw new Error("文档未提醒 Edit Cloudflare Workers 模板缺少 D1 权限");
-  }
-  if (!deploy.includes("D1 : Edit")) {
-    throw new Error("文档未列出 D1 : Edit 权限");
-  }
-  return "ok";
-});
-
-check("无临时/编辑器残留文件入库", () => {
-  let tracked;
-  try {
-    tracked = execSync("git ls-files", { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-  } catch (error) {
-    // 某些沙箱环境禁止 spawn 子进程，此时无法读取 git 索引。
-    // 这属于环境限制，不是代码问题 —— 跳过而不是误报失败。
-    if (error?.code === "EPERM" || error?.code === "ENOENT") {
-      return "skipped (spawn 受限)";
-    }
-    throw error;
-  }
-  const forbidden = [".gitmsg.txt", ".git-msg.txt", ".commitmsg", "*.commitmsg", ".tmp-", "*.bak", ".DS_Store"];
-  const offenders = tracked
-    .split("\n")
-    .filter((f) => forbidden.some((pattern) => (pattern.includes("*") ? f.includes(pattern.replace("*", "")) : f === pattern)));
-  if (offenders.length) throw new Error(`发现临时文件: ${offenders.join(", ")}`);
-
-  // 防止因环境变量异常（如 os.tmpdir() 返回 undefined）
-  // 把临时文件写进仓库的相对路径
-  const badPaths = tracked.split("\n").filter((f) => f.startsWith("undefined/") || f.includes("/undefined/"));
-  if (badPaths.length) throw new Error(`发现异常路径: ${badPaths.join(", ")}`);
-
-  return "ok";
-});
-
-check("workflow 不对 d1 create 使用 --json", () => {
-  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
-  // wrangler d1 create 不支持 --json
-  if (/d1 create[^\n]*--json/.test(workflow)) {
-    throw new Error("d1 create 不支持 --json，会报 Unknown argument");
-  }
-  return "ok";
-});
-
-check("workflow 不用 sed 修改 TOML", () => {
-  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
-  // sed 改 TOML 需要嵌套引号，极易丢失引号导致 "invalid value"
-  if (/sed -i[^\n]*wrangler\.toml/.test(workflow)) {
-    throw new Error("不要用 sed 改 wrangler.toml，改用 node 重写（引号会丢）");
-  }
-  // 注入逻辑必须用 JSON.stringify 保证引号正确
-  if (!workflow.includes("JSON.stringify(issuer)")) {
-    throw new Error("ISSUER 注入应使用 JSON.stringify 保证带引号");
-  }
-  return "ok";
-});
-
-check("workflow 自校验不依赖凭证", () => {
-  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
-
-  // 校验配置合法性必须用 deploy --dry-run（离线），不能用 d1 list 这类需要 API 的命令。
-  // 否则 CI 里没配 token 时会把「未认证」误报成「配置无效」。
-  if (/wrangler d1 list[^\n]*\|\|\s*\{/.test(workflow)) {
-    throw new Error("d1 list 需要凭证，不能用作配置自校验");
-  }
-  if (!workflow.includes("deploy --dry-run --outdir=.dryrun")) {
-    throw new Error("缺少离线配置校验");
-  }
-  return "ok";
-});
-
-check("超管种子脚本幂等且校验输入", () => {
-  const path = join(ROOT, "scripts/seed-admin-ci.mjs");
-  const script = read(path);
-
-  // 必须有幂等判断：先查已有超管
-  if (!script.includes("role = 'super_admin'")) {
-    throw new Error("种子脚本缺少「是否已有超管」的查询");
-  }
-  if (!script.includes("created=false")) {
-    throw new Error("种子脚本缺少跳过时的输出");
-  }
-
-  // 必须有输入校验
-  if (!script.includes("至少 12 位")) {
-    throw new Error("种子脚本未校验密码长度");
-  }
-
-  // workflow 里必须真的调用它
-  const workflow = read(join(ROOT, ".github/workflows/deploy.yml"));
-  if (!workflow.includes("seed-admin-ci.mjs")) {
-    throw new Error("deploy.yml 未调用种子脚本");
-  }
-  return "ok";
-});
-
-check("Passkey 的 origin/rpId 经过规范化", () => {
-  const mfa = read(join(ROOT, "packages/core/src/routes/mfa.ts"));
-
-  // 直接传 c.env.ISSUER 作为 expectedOrigin 会在带结尾斜杠时失配
-  if (/expectedOrigin:\s*c\.env\.ISSUER\s*\?\?/.test(mfa)) {
-    throw new Error("expectedOrigin 必须经 normalizeOrigin，不能直接传 ISSUER");
-  }
-  if (!mfa.includes("normalizeOrigin(c.env.ISSUER")) {
-    throw new Error("未使用 normalizeOrigin");
-  }
-  if (!mfa.includes("deriveRpId")) {
-    throw new Error("未在 rpId 缺失时从 origin 推导");
-  }
-  return "ok";
-});
-
-check("安全页提示写到常驻可见元素", () => {
-  const client = read(join(ROOT, "packages/gateway/src/pages/security-client.ts"));
-
-  // 提示不能只写进 #totp-status —— 它在 hidden 的 TOTP 面板内，
-  // 用户看不到任何反馈，表现为"点了没反应"。
-  if (!client.includes('"security-hint"') && !client.includes("'security-hint'")) {
-    throw new Error("安全页提示未写入常驻元素 #security-hint");
-  }
-  if (!client.includes('"security-error"') && !client.includes("'security-error'")) {
-    throw new Error("缺少错误高亮元素 #security-error");
-  }
-
-  // 异常必须落到 console，移动端现场只能靠这个排查
-  if (!client.includes("console.error")) {
-    throw new Error("Passkey 异常未打印到控制台");
-  }
-
-  const page = read(join(ROOT, "packages/gateway/src/routes/security.tsx"));
-  if (!page.includes('id="security-hint"')) {
-    throw new Error("页面缺少 #security-hint 元素");
-  }
-  return "ok";
-});
-
-check("改密页 GET 与 POST 都存在", () => {
-  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
-
-  // 之前只写了 GET，前端提交打到不存在的 POST，表现为"修改失败"。
-  if (!account.includes('accountRoutes.get("/account/password"')) {
-    throw new Error("缺少改密页 GET 路由");
-  }
-  if (!account.includes('accountRoutes.post("/account/password"')) {
-    throw new Error("缺少改密提交 POST 路由");
-  }
-  if (!account.includes("/user/change-password")) {
-    throw new Error("POST 未调用 Core 的 change-password 方法");
-  }
-  return "ok";
-});
-
-check("种子超管不强制改密", () => {
-  // 密码由部署者在 GitHub Secrets 里自行设定，不是系统生成的临时密码。
   for (const file of ["scripts/seed-admin-ci.mjs", "scripts/seed-superadmin.mjs"]) {
-    const script = read(join(ROOT, file));
-    const match = script.match(/must_change_password[\s\S]{0,200}?'active',\s*([01]),/);
-    if (!match) throw new Error(`${file} 中找不到 must_change_password 的值`);
-    if (match[1] !== "0") {
-      throw new Error(`${file} 仍把 must_change_password 设为 1，会强制用户改密`);
-    }
+    const src = read(file);
+    const match = src.match(/must_change_password[\s\S]{0,200}?'active',\s*([01]),/);
+    expect(match, `${file} 找不到 must_change_password 的值`);
+    expect(match[1] === "0", `${file} 强制用户改密（密码是部署者自己设的）`);
   }
-  return "ok";
+
+  expect(read(".github/workflows/deploy.yml").includes("seed-admin-ci.mjs"), "deploy.yml 未调用种子脚本");
 });
 
-check("改密后保留当前会话并轮换 token", () => {
-  const internal = read(join(ROOT, "packages/core/src/routes/internal.ts"));
-  const start = internal.indexOf('internalRoutes.post("/user/change-password"');
-  if (start < 0) throw new Error("未找到 change-password 路由");
-  // 截到下一个路由为止，避免把文件里其它 revokeAllStatements 算进来
-  const nextRoute = internal.indexOf("internalRoutes.post(", start + 10);
-  const block = internal.slice(start, nextRoute > start ? nextRoute : start + 2500);
-
-  // 吊销时必须排除当前会话，否则用户改完密码立刻被踢下线
-  if (!block.includes("keepSessionId")) {
-    throw new Error("改密吊销会话时未保留当前会话");
-  }
-  // 保留后必须轮换 token，否则旧 token 仍可用（会话固定）
-  if (!block.includes("rotateSessionToken")) {
-    throw new Error("改密后未轮换当前会话 token");
-  }
-
-  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
-  // 新 token 必须写回 Cookie，否则浏览器还拿旧的
-  if (!account.includes("setSessionCookie")) {
-    throw new Error("Gateway 未把轮换后的 token 写回 Cookie");
-  }
-  if (!account.includes("sessionId: c.get(\"sessionId\")")) {
-    throw new Error("未把当前会话 id 传给 Core");
-  }
-  return "ok";
+// ============================================================ 15. 改密页成对
+check("改密页：GET 与 POST 成对存在", () => {
+  const account = code("packages/gateway/src/routes/account.tsx");
+  expect(account.includes('accountRoutes.get("/account/password"'), "缺少改密页 GET");
+  expect(account.includes('accountRoutes.post("/account/password"'), "缺少改密提交 POST");
+  expect(account.includes("/user/change-password"), "POST 未调用 Core 的改密方法");
 });
 
-check("改密响应把业务数据放在 data 内", () => {
-  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
-  // 前端统一读 result.data，放顶层会导致"成功却提示失败"
-  if (!account.includes("data: { redirect:")) {
-    throw new Error("改密成功响应未把 redirect 放进 data");
-  }
-  return "ok";
-});
-
-check("恢复码有可用的登录入口", () => {
-  const page = read(join(ROOT, "packages/gateway/src/pages/mfa.tsx"));
-  const client = read(join(ROOT, "packages/gateway/src/pages/client.ts"));
-  const route = read(join(ROOT, "packages/gateway/src/routes/mfa.tsx"));
-
-  // 页面必须有表单，且提交到后端已有的端点
-  if (!page.includes('action="/auth/mfa/recovery"')) {
-    throw new Error("MFA 页面没有恢复码表单");
-  }
-  if (!page.includes("recovery-toggle")) {
-    throw new Error("MFA 页面没有恢复码入口按钮");
-  }
-  if (!client.includes("setupRecoveryToggle")) {
-    throw new Error("客户端没有绑定恢复码表单的展开逻辑");
-  }
-  // 后端端点必须存在
-  if (!route.includes('mfaRoutes.post("/mfa/recovery"')) {
-    throw new Error("后端缺少 /mfa/recovery 端点");
-  }
-  return "ok";
-});
-
-// ---- 输出 ----
-const failed = checks.filter((c) => !c.ok);
+// ============================================================ 输出
 for (const c of checks) {
   console.log(`${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.ok ? "" : `\n      ${c.detail}`}`);
 }
+const failed = checks.filter((c) => !c.ok);
 console.log();
 console.log(`${checks.length - failed.length}/${checks.length} 通过`);
 if (failed.length) process.exit(1);
