@@ -103,6 +103,7 @@ mfaRoutes.post("/mfa", async (c) => {
       replayed: "该验证码已使用过，请等待下一个",
       invalid_code: "验证码不正确",
       no_factor: "没有可用的验证器",
+      locked: "尝试次数过多，请稍后再试",
     };
     return fail(messages[result.code] ?? "验证失败");
   }
@@ -175,7 +176,10 @@ mfaRoutes.post("/passkey/verify", async (c) => {
     },
   });
 
-  if (!result.ok) return c.json({ ok: false, message: "Passkey 验证失败" }, 401);
+  if (!result.ok) {
+    if (result.code === "locked") return c.json({ ok: false, message: "尝试次数过多，请稍后再试" }, 429);
+    return c.json({ ok: false, message: "Passkey 验证失败" }, 401);
+  }
 
   setSessionCookie(c, result.data.token, TTL.session);
   const redirect = result.data.mustChangePassword
@@ -226,6 +230,10 @@ mfaRoutes.post("/mfa/recovery", async (c) => {
   });
 
   if (!result.ok) {
+    if (result.code === "locked") {
+      if (isJson) return c.json({ ok: false, message: "尝试次数过多，请稍后再试" }, 429);
+      return c.html(<MfaPage error="尝试次数过多，请稍后再试" />, 429);
+    }
     if (isJson) return c.json({ ok: false, message: "恢复码无效" }, 401);
     return c.html(<MfaPage error="恢复码无效或已使用" />, 401);
   }

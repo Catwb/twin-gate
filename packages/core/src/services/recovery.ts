@@ -6,6 +6,18 @@ import { nowSeconds } from "../lib/time";
 
 export const RECOVERY_CODE_COUNT = 10;
 
+/**
+ * 每个码的熵：5 字节 = 40 位。
+ *
+ * 这里必须与 formatCode 的截取长度绑定 —— 之前写成 randomHex(10) 再截前 10 位，
+ * 生成 20 个十六进制字符却只用一半。数量改成 20 也一样，改错了也看不出来。
+ * 40 位配合"单次有效 + 每账号 15 分钟 10 次"的限流足够。
+ */
+export const RECOVERY_CODE_BYTES = 5;
+
+/** 恢复码的实际熵（位）。40 位 + 单次有效 + 限流 = 够用。 */
+export const RECOVERY_CODE_ENTROPY_BITS = RECOVERY_CODE_BYTES * 8;
+
 export type GeneratedCodes = { codes: string[] };
 
 /**
@@ -20,7 +32,7 @@ export async function generateRecoveryCodes(db: Db, userId: string): Promise<Gen
   const codes: string[] = [];
 
   for (let i = 0; i < RECOVERY_CODE_COUNT; i++) {
-    const code = formatCode(randomHex(10));
+    const code = formatCode(randomHex(RECOVERY_CODE_BYTES));
     codes.push(code);
     await db.insert(mfaRecoveryCodes).values({
       id: uuid(),
@@ -94,12 +106,16 @@ export function revokeMfaStatements(db: Db, userId: string) {
 }
 
 /** 用户输入的恢复码统一去掉分隔符与大小写差异。 */
-function normalizeCode(code: string): string {
+export function normalizeCode(code: string): string {
   return code.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
 
-/** 展示为 xxxxx-xxxxx 形式，便于抄写。 */
-function formatCode(hex: string): string {
-  const clean = hex.toLowerCase().slice(0, 10);
-  return `${clean.slice(0, 5)}-${clean.slice(5, 10)}`;
+/** 展示为 xxxxx-xxxxx 形式，便于抄写。长度由 RECOVERY_CODE_BYTES 决定。 */
+export function formatCode(hex: string): string {
+  const clean = hex.toLowerCase();
+  const expected = RECOVERY_CODE_BYTES * 2;
+  if (clean.length !== expected) {
+    throw new Error(`恢复码长度异常: ${clean.length} != ${expected}`);
+  }
+  return `${clean.slice(0, 5)}-${clean.slice(5)}`;
 }

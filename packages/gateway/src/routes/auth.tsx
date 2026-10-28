@@ -84,6 +84,7 @@ authRoutes.post("/login", async (c) => {
 authRoutes.post("/logout", async (c) => {
   const sessionId = c.get("sessionId");
   if (sessionId) {
+    // best-effort：登出必须无条件成功，吊销失败也只能清 Cookie。
     await callCore(c.env, {
       method: "POST",
       path: "/session/revoke",
@@ -115,7 +116,10 @@ authRoutes.post("/invite/accept", async (c) => {
     ip: c.req.header("cf-connecting-ip") ?? "0.0.0.0",
   });
 
-  if (!result.ok) return c.json({ ok: false, message: "邀请码无效或已过期" }, 400);
+  if (!result.ok) {
+    if (result.code === "locked") return c.json({ ok: false, message: "尝试次数过多，请稍后再试" }, 429);
+    return c.json({ ok: false, message: "邀请码无效或已过期" }, 400);
+  }
   return c.json({ ok: true, redirect: "/login" });
 });
 

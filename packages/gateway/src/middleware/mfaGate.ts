@@ -41,6 +41,7 @@ export const mfaGate = createMiddleware<AppContext>(async (c, next) => {
   const result = await callCore<{ ok: boolean; totp: boolean; passkey: boolean }>(c.env, {
     method: "POST",
     path: "/mfa/status",
+    caller,
     payload: { userId: caller.userId },
   });
 

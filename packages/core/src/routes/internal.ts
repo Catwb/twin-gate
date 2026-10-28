@@ -6,7 +6,13 @@ import type { Env } from "../types";
 import { getDb } from "../db/client";
 import { safeAudit } from "../services/audit";
 import { checkPasswordPolicy, dummyVerify, makePasswordHash, verifyPassword } from "../services/password";
-import { buckets, checkLoginAllowed, clearLoginFailures, consume, recordLoginFailure } from "../services/rateLimit";
+import {
+  checkInviteIpAllowed,
+  checkLoginAllowed,
+  clearLoginFailures,
+  recordInviteIpFailure,
+  recordLoginFailure,
+} from "../services/rateLimit";
 import {
   createSession,
   lookupSession,
@@ -459,8 +465,18 @@ internalRoutes.post("/invite/accept", async (c) => {
   const policy = checkPasswordPolicy(parsed.data.password);
   if (!policy.ok) return c.json({ ok: false, code: "weak_password", message: policy.reason }, 400);
 
+  // 匿名端点：每次尝试都要算一次 SHA-256 并查库，不限流就是免费的资源消耗。
+  const ip = (c.req.header("x-caller-ip") ?? "0.0.0.0").slice(0, 64);
+  if (!(await checkInviteIpAllowed(db, ip))) {
+    await safeAudit(db, { action: "invite_locked", ip });
+    return c.json({ ok: false, code: "locked" }, 429);
+  }
+
   const consumed = await consumeInvitation(db, parsed.data.code);
-  if (!consumed.ok) return c.json({ ok: false, code: "invalid_invite" }, 400);
+  if (!consumed.ok) {
+    await recordInviteIpFailure(db, ip);
+    return c.json({ ok: false, code: "invalid_invite" }, 400);
+  }
 
   // 邀请码若绑定了邮箱，必须一致。
   if (consumed.invitation.email && consumed.invitation.email !== parsed.data.email.toLowerCase()) {

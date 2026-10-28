@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { normalizeCode } from "../src/services/recovery";
 
 /**
- * 恢复码的格式化与归一化是纯函数逻辑，
- * 这里直接测规则，避免为了一张表去搭 D1 mock。
+ * 这些用例曾经把 normalizeCode 的实现抄在测试文件里 ——
+ * 那样改坏源码测试照样绿。现在直接导入真实实现。
  */
-function normalizeCode(code: string): string {
-  return code.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-}
-
 describe("恢复码归一化", () => {
   it("忽略分隔符", () => {
     expect(normalizeCode("dc8a7-f7a4a")).toBe("dc8a7f7a4a");

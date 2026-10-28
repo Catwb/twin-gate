@@ -92,6 +92,31 @@ export async function lookupSession(
   return { valid: true, sessionId: row.id, userId: row.userId, role, status: row.status };
 }
 
+/**
+ * 校验某个 mfa_pending 会话确实属于指定用户。
+ *
+ * 第二因子端点从 payload 里同时收 userId 与 sessionId，两者来自不同地方，
+ * 不校验绑定关系的话，任何持有自己待验证会话的人都能拿别人的 userId
+ * 去猜验证码 —— 验证码成了可离线爆破的预言机。
+ */
+export async function isPendingSessionOfUser(
+  db: Db,
+  params: { sessionId: string; userId: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({ userId: sessions.userId, status: sessions.status, revokedAt: sessions.revokedAt, expiresAt: sessions.expiresAt })
+    .from(sessions)
+    .where(eq(sessions.id, params.sessionId))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) return false;
+  if (row.revokedAt !== null) return false;
+  if (row.expiresAt <= nowSeconds()) return false;
+  if (row.status !== SessionStatus.MfaPending) return false;
+  return row.userId === params.userId;
+}
+
 export async function touchSession(db: Db, sessionId: string): Promise<void> {
   await db.update(sessions).set({ lastUsedAt: nowSeconds() }).where(eq(sessions.id, sessionId));
 }

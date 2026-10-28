@@ -23,6 +23,7 @@ securityRoutes.get("/security", async (c) => {
   }>(c.env, {
     method: "POST",
     path: "/mfa/status",
+    caller,
     payload: { userId: caller.userId },
   });
 

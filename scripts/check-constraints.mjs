@@ -13,6 +13,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { checkFrontendPaths } from "./checks/frontend-paths.mjs";
 import { checkAdminFeedback } from "./checks/admin-feedback.mjs";
+import { checkSecondFactor } from "./checks/second-factor.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const checks = [];
@@ -389,6 +390,9 @@ checkFrontendPaths({ check, ROOT });
 
 // ============================================================ 17. 管理端反馈一致性
 checkAdminFeedback({ check, ROOT });
+
+// ============================================================ 18. 第二因子防线
+checkSecondFactor({ check, ROOT });
 
 // ============================================================ 输出
 for (const c of checks) {

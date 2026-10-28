@@ -85,12 +85,17 @@ adminAppsRoutes.post("/apps/delete", requireRole(Role.SuperAdmin), async (c) => 
   const form = await c.req.formData();
   const clientId = String(form.get("clientId") ?? "");
 
-  await callCore(c.env, {
+  const result = await callCore(c.env, {
     method: "POST",
     path: "/client/delete",
     caller: c.get("caller"),
     payload: { clientId },
   });
+
+  // 丢弃返回值就等于「删失败了也报删除成功」。
+  if (!result.ok) {
+    return c.redirect("/admin/apps?error=" + encodeURIComponent("删除失败"), 303);
+  }
 
   return c.redirect("/admin/apps?deleted=" + encodeURIComponent(clientId), 303);
 });

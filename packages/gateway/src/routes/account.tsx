@@ -36,6 +36,7 @@ accountRoutes.get("/", async (c) => {
   }>(c.env, {
     method: "POST",
     path: "/mfa/status",
+    caller,
     payload: { userId: caller.userId },
   });
 
@@ -94,6 +95,7 @@ accountRoutes.get("/password", async (c) => {
   const status = await callCore<{ mustChangePassword: boolean }>(c.env, {
     method: "POST",
     path: "/mfa/status",
+    caller,
     payload: { userId: caller.userId },
   });
 

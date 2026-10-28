@@ -4,7 +4,12 @@ import { Role, SessionStatus } from "@sso/shared";
 import type { Env } from "../types";
 import { getDb } from "../db/client";
 import { safeAudit } from "../services/audit";
-import { createSession, revokeAllStatements, rotateSessionToken } from "../services/session";
+import {
+  createSession,
+  isPendingSessionOfUser,
+  revokeAllStatements,
+  rotateSessionToken,
+} from "../services/session";
 import { findUserById, markLogin } from "../services/users";
 import { createTotpFactor, hasTotpFactor, persistTotpFactor, verifyTotp } from "../services/totp";
 import {
@@ -21,6 +26,14 @@ import {
   revokeMfaStatements,
 } from "../services/recovery";
 import { buildAuthenticationOptionsForUser } from "../services/passkeyAuth";
+import {
+  checkPasskeyIpAllowed,
+  checkSecondFactorAllowed,
+  clearPasskeyIpFailures,
+  clearSecondFactorFailures,
+  recordPasskeyIpFailure,
+  recordSecondFactorFailure,
+} from "../services/rateLimit";
 import { deriveRpId, normalizeOrigin } from "../lib/webauthn-config";
 import { uuid } from "../lib/crypto";
 
@@ -48,6 +61,19 @@ function callerOf(body: unknown) {
   return parsed.success ? parsed.data.caller ?? null : null;
 }
 
+/**
+ * 读取本人或被管理者的 MFA 状态。
+ *
+ * 这些端点从 payload 里收 userId，如果不与 caller 比对，
+ * Core 就变成"给个 userId 就吐对方 MFA 配置"的查询服务 ——
+ * Gateway 现在是唯一调用方且只传自己的 id，但纵深防御不能靠调用方自觉。
+ */
+function selfOrAdmin(caller: { userId: string; role: string } | null, userId: string): boolean {
+  if (!caller) return false;
+  if (caller.userId === userId) return true;
+  return caller.role === Role.SuperAdmin || caller.role === Role.Admin;
+}
+
 // ---------------------------------------------------------------- 状态
 
 mfaRoutes.post("/mfa/status", async (c) => {
@@ -55,6 +81,9 @@ mfaRoutes.post("/mfa/status", async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = z.object({ userId: z.string().min(1) }).safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
+  if (!selfOrAdmin(callerOf(body), parsed.data.userId)) {
+    return c.json({ ok: false, code: "forbidden" }, 403);
+  }
 
   const [totp, passkey, remaining] = await Promise.all([
     hasTotpFactor(db, parsed.data.userId),
@@ -137,6 +166,8 @@ mfaRoutes.post("/mfa/totp/confirm", async (c) => {
   }
 
   await activateTotpFactor(db, caller.userId);
+  // 绑定成功说明人是本人，之前累积的失败计数应当清零。
+  await clearSecondFactorFailures(db, caller.userId);
   const recovery = await generateRecoveryCodes(db, caller.userId);
 
   await safeAudit(db, {
@@ -165,6 +196,25 @@ mfaRoutes.post("/mfa/verify-totp", async (c) => {
     .safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
 
+  // userId 与会话必须匹配：否则任何人持自己的待验证会话，
+  // 就能拿别人的 userId 把验证码当预言机来猜。
+  const bound = await isPendingSessionOfUser(db, {
+    sessionId: parsed.data.sessionId,
+    userId: parsed.data.userId,
+  });
+  if (!bound) return c.json({ ok: false, code: "unauthorized" }, 401);
+
+  // 6 位数字只有 100 万种可能。不限流的话，第二因子就等于没有。
+  if (!(await checkSecondFactorAllowed(db, parsed.data.userId))) {
+    await safeAudit(db, {
+      action: "mfa_locked",
+      actorUserId: parsed.data.userId,
+      ip: parsed.data.ip ?? null,
+      meta: { method: "totp" },
+    });
+    return c.json({ ok: false, code: "locked" }, 429);
+  }
+
   const result = await verifyTotp(db, {
     userId: parsed.data.userId,
     code: parsed.data.code,
@@ -172,6 +222,7 @@ mfaRoutes.post("/mfa/verify-totp", async (c) => {
   });
 
   if (!result.ok) {
+    await recordSecondFactorFailure(db, parsed.data.userId);
     await safeAudit(db, {
       action: "mfa_verify_failed",
       actorUserId: parsed.data.userId,
@@ -180,6 +231,8 @@ mfaRoutes.post("/mfa/verify-totp", async (c) => {
     });
     return c.json({ ok: false, code: result.reason }, 401);
   }
+
+  await clearSecondFactorFailures(db, parsed.data.userId);
 
   const user = await findUserById(db, parsed.data.userId);
   if (!user) return c.json({ ok: false, code: "unauthorized" }, 401);
@@ -235,8 +288,38 @@ mfaRoutes.post("/mfa/verify-recovery", async (c) => {
     .safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
 
+  // 同样必须校验会话归属，否则恢复码可以被拿来跨账号试探。
+  const bound = await isPendingSessionOfUser(db, {
+    sessionId: parsed.data.sessionId,
+    userId: parsed.data.userId,
+  });
+  if (!bound) return c.json({ ok: false, code: "unauthorized" }, 401);
+
+  // 与 TOTP 共用同一个账号桶：换验证方式不能重置计数。
+  const ip = c.req.header("x-caller-ip") ?? null;
+  if (!(await checkSecondFactorAllowed(db, parsed.data.userId))) {
+    await safeAudit(db, {
+      action: "mfa_locked",
+      actorUserId: parsed.data.userId,
+      ip,
+      meta: { method: "recovery" },
+    });
+    return c.json({ ok: false, code: "locked" }, 429);
+  }
+
   const result = await consumeRecoveryCode(db, { userId: parsed.data.userId, code: parsed.data.code });
-  if (!result.ok) return c.json({ ok: false, code: "invalid_recovery_code" }, 401);
+  if (!result.ok) {
+    await recordSecondFactorFailure(db, parsed.data.userId);
+    await safeAudit(db, {
+      action: "mfa_verify_failed",
+      actorUserId: parsed.data.userId,
+      ip,
+      meta: { method: "recovery" },
+    });
+    return c.json({ ok: false, code: "invalid_recovery_code" }, 401);
+  }
+
+  await clearSecondFactorFailures(db, parsed.data.userId);
 
   const user = await findUserById(db, parsed.data.userId);
   if (!user) return c.json({ ok: false, code: "unauthorized" }, 401);
@@ -332,8 +415,9 @@ mfaRoutes.post("/passkey/register-verify", async (c) => {
   });
 
   if (!result.ok) {
-    // detail 只在服务端日志与本次响应里出现，方便定位 rpID / origin 不匹配。
-    return c.json({ ok: false, code: result.reason, detail: result.detail ?? null }, 400);
+    // detail 已在服务层 console.error，这里不再回传：
+    // 浏览器不需要知道是 rpID 不匹配还是 origin 不匹配，那是攻击者的提示。
+    return c.json({ ok: false, code: result.reason }, 400);
   }
 
   await safeAudit(db, {
@@ -375,6 +459,14 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
     .safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
 
+  // 认证前还没有身份上下文，只能按 IP 限。这条路径是免密的，
+  // 不限流就等于给所有凭证一个免费的爆破台。
+  const ip = parsed.data.ip ?? "0.0.0.0";
+  if (!(await checkPasskeyIpAllowed(db, ip))) {
+    await safeAudit(db, { action: "mfa_locked", ip, meta: { method: "passkey" } });
+    return c.json({ ok: false, code: "locked" }, 429);
+  }
+
   const result = await completeAuthentication(db, {
     response: parsed.data.response as never,
     expectedChallenge: parsed.data.challenge,
@@ -383,13 +475,17 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
   });
 
   if (!result.ok) {
+    await recordPasskeyIpFailure(db, ip);
     await safeAudit(db, {
       action: "mfa_verify_failed",
-      ip: parsed.data.ip ?? null,
+      ip,
       meta: { method: "passkey", reason: result.reason },
     });
-    return c.json({ ok: false, code: result.reason, detail: result.detail ?? null }, 401);
+    // detail 只进服务端日志，绝不能出现在响应里 —— 它可能含挑战值。
+    return c.json({ ok: false, code: result.reason }, 401);
   }
+
+  await clearPasskeyIpFailures(db, ip);
 
   const user = await findUserById(db, result.userId);
   if (!user || user.status !== "active") return c.json({ ok: false, code: "unauthorized" }, 401);
@@ -421,6 +517,9 @@ mfaRoutes.post("/mfa/factors", async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = z.object({ userId: z.string().min(1) }).safeParse(payloadOf(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
+  if (!selfOrAdmin(callerOf(body), parsed.data.userId)) {
+    return c.json({ ok: false, code: "forbidden" }, 403);
+  }
 
   const [passkeys, totp] = await Promise.all([
     listPasskeys(db, parsed.data.userId),
@@ -444,6 +543,10 @@ mfaRoutes.post("/mfa/reset", async (c) => {
     ...revokeMfaStatements(db, parsed.data.userId),
     ...revokeAllStatements(db, { userId: parsed.data.userId, reason: "mfa_reset_by_admin" }),
   ]);
+
+  // 必须一并清掉第二因子失败计数：
+  // 用户被锁之后才来重置 MFA，不清桶等于重置完还是打不开。
+  await clearSecondFactorFailures(db, parsed.data.userId);
 
   await safeAudit(db, {
     action: "mfa_reset_by_admin",

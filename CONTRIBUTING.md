@@ -18,7 +18,7 @@ workspace 用了 `workspace:*` 协议，npm 解析不了，混用会装出坏掉
 ### 2. 提交前必须 `pnpm verify` 全绿
 
 ```bash
-pnpm verify     # 类型检查 + 单测 + 15 条硬约束门禁
+pnpm verify     # 类型检查 + 单测 + 23 条硬约束门禁
 ```
 
 任何一条红都不许合。门禁检查的是架构假设，不是代码风格。
@@ -88,4 +88,4 @@ core: 授权码消费改为原子条件更新
 
 改错后测试立刻会红的（比如响应字段名、配置取值），交给测试，不要加门禁。
 
-现有 15 条门禁，每条内部按领域聚合了多项断言。位置：`scripts/check-constraints.mjs`。
+现有 23 条门禁，每条内部按领域聚合了多项断言。位置：`scripts/check-constraints.mjs`。

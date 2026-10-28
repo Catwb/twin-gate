@@ -1025,5 +1025,5 @@ curl https://sso.your-domain.com/.well-known/openid-configuration | grep issuer
 pnpm verify
 ```
 
-包含：类型检查（3 包）+ 单元测试（73 个）+ 硬约束门禁（39 条）。
+包含：类型检查（3 包）+ 单元测试（75 个）+ 硬约束门禁（23 条）。
 CI 里跑这一条即可。

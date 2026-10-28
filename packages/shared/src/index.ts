@@ -51,6 +51,28 @@ export const LOCKOUT = {
   perIpSeconds: 60 * 60,
 } as const;
 
+/**
+ * 第二因子验证限流。
+ *
+ * 密码登录有账号 + IP 双维度限制，但第二因子此前一次都没有 ——
+ * 6 位 TOTP 只有 100 万种可能，不限流等于没有第二因子。
+ *
+ * 账号维度：TOTP 与恢复码共用同一个桶，换验证方式不重置计数。
+ * IP 维度：Passkey 认证前还没有身份，只能按 IP 计。
+ */
+export const SECOND_FACTOR = {
+  perAccountFailures: 10,
+  perAccountSeconds: 15 * 60,
+  perIpFailures: 30,
+  perIpSeconds: 60 * 60,
+} as const;
+
+/** 邀请码接受是匿名入口，按 IP 限制。128 位熵不怕猜，怕的是被刷。 */
+export const INVITE_LIMIT = {
+  perIpFailures: 10,
+  perIpSeconds: 60 * 60,
+} as const;
+
 /** 管理列表分页 —— 免费版 CPU 预算所限，硬上限 25 */
 export const PAGE_SIZE = 25;
 

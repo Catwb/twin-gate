@@ -241,6 +241,7 @@ oauthRoutes.post("/oauth/revoke", async (c) => {
   const token = form ? String(form.get("token") ?? "") : "";
 
   if (clientId && clientSecret && token) {
+    // best-effort：RFC 7009 规定无论令牌是否存在都返回 200。
     await callCore(c.env, {
       method: "POST",
       path: "/revoke",
@@ -261,6 +262,7 @@ oauthRoutes.get("/oauth/logout", async (c) => {
 
   const session = await getSessionCaller(c);
   if (session) {
+    // best-effort：登出必须无条件成功，吊销失败也只能清 Cookie。
     await callCore(c.env, {
       method: "POST",
       path: "/session/revoke",
