@@ -480,6 +480,43 @@ check("种子超管不强制改密", () => {
   return "ok";
 });
 
+check("改密后保留当前会话并轮换 token", () => {
+  const internal = read(join(ROOT, "packages/core/src/routes/internal.ts"));
+  const start = internal.indexOf('internalRoutes.post("/user/change-password"');
+  if (start < 0) throw new Error("未找到 change-password 路由");
+  // 截到下一个路由为止，避免把文件里其它 revokeAllStatements 算进来
+  const nextRoute = internal.indexOf("internalRoutes.post(", start + 10);
+  const block = internal.slice(start, nextRoute > start ? nextRoute : start + 2500);
+
+  // 吊销时必须排除当前会话，否则用户改完密码立刻被踢下线
+  if (!block.includes("keepSessionId")) {
+    throw new Error("改密吊销会话时未保留当前会话");
+  }
+  // 保留后必须轮换 token，否则旧 token 仍可用（会话固定）
+  if (!block.includes("rotateSessionToken")) {
+    throw new Error("改密后未轮换当前会话 token");
+  }
+
+  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
+  // 新 token 必须写回 Cookie，否则浏览器还拿旧的
+  if (!account.includes("setSessionCookie")) {
+    throw new Error("Gateway 未把轮换后的 token 写回 Cookie");
+  }
+  if (!account.includes("sessionId: c.get(\"sessionId\")")) {
+    throw new Error("未把当前会话 id 传给 Core");
+  }
+  return "ok";
+});
+
+check("改密响应把业务数据放在 data 内", () => {
+  const account = read(join(ROOT, "packages/gateway/src/routes/account.tsx"));
+  // 前端统一读 result.data，放顶层会导致"成功却提示失败"
+  if (!account.includes("data: { redirect:")) {
+    throw new Error("改密成功响应未把 redirect 放进 data");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {

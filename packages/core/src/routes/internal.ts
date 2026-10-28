@@ -12,6 +12,7 @@ import {
   lookupSession,
   revokeAllStatements,
   revokeOneSessionStatements,
+  rotateSessionToken,
   touchSession,
 } from "../services/session";
 import {
@@ -271,6 +272,8 @@ internalRoutes.post("/user/change-password", async (c) => {
       userId: z.string().min(1),
       currentPassword: z.string().min(1).max(256),
       newPassword: z.string().min(1).max(256),
+      // 当前会话 id：改密后保留它并轮换 token，否则用户改完立刻被踢下线
+      sessionId: z.string().min(1).optional(),
     })
     .safeParse(parsedEnvelopePayload(body));
   if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
@@ -289,13 +292,25 @@ internalRoutes.post("/user/change-password", async (c) => {
   if (!ok) return c.json({ ok: false, code: "invalid_credentials" }, 401);
 
   const passwordHash = await makePasswordHash(c.env.SESSION_PEPPER, parsed.data.newPassword);
+  const schema = await import("../db/schema");
   await db
-    .update((await import("../db/schema")).users)
+    .update(schema.users)
     .set({ passwordHash, mustChangePassword: 0 })
-    .where(eq((await import("../db/schema")).users.id, user.id));
+    .where(eq(schema.users.id, user.id));
 
-  // 改密后吊销其它会话（保留当前这条由 Gateway 侧决定）
-  await db.batch([...revokeAllStatements(db, { userId: user.id, reason: "password_changed" })]);
+  // 改密后吊销其它会话，但保留当前这条 —— 否则用户刚改完就被踢下线。
+  // 保留后立即轮换 token，避免会话固定。
+  await db.batch([
+    ...revokeAllStatements(db, {
+      userId: user.id,
+      reason: "password_changed",
+      ...(parsed.data.sessionId ? { keepSessionId: parsed.data.sessionId } : {}),
+    }),
+  ]);
+
+  const rotated = parsed.data.sessionId
+    ? await rotateSessionToken(db, parsed.data.sessionId, SessionStatus.Active)
+    : null;
 
   await safeAudit(db, {
     action: "password_changed",
@@ -303,8 +318,12 @@ internalRoutes.post("/user/change-password", async (c) => {
     ip: c.req.header("x-caller-ip") ?? null,
   });
 
-  return c.json({ ok: true });
+  return c.json({
+    ok: true,
+    ...(rotated ? { token: rotated.token, expiresAt: rotated.expiresAt } : {}),
+  });
 });
+
 internalRoutes.post("/user/set-status", async (c) => {
   const db = c.get("db");
   const body = await c.req.json().catch(() => null);

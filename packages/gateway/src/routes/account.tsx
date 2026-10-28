@@ -1,7 +1,8 @@
 /** @jsxImportSource hono/jsx */
 import { Hono } from "hono";
+import { TTL } from "@sso/shared";
 import { callCore } from "../core/callCore";
-import { requireAuth } from "../middleware/session";
+import { requireAuth, setSessionCookie } from "../middleware/session";
 import { Layout } from "../components/Layout";
 import type { AppContext } from "../types";
 
@@ -95,7 +96,7 @@ accountRoutes.post("/account/password", async (c) => {
     return c.json({ ok: false, code: "bad_request", message: "请求无效" }, 400);
   }
 
-  const result = await callCore(c.env, {
+  const result = await callCore<{ ok: boolean; token?: string; expiresAt?: number }>(c.env, {
     method: "POST",
     path: "/user/change-password",
     caller,
@@ -103,6 +104,8 @@ accountRoutes.post("/account/password", async (c) => {
       userId: caller.userId,
       currentPassword: body.currentPassword,
       newPassword: body.newPassword,
+      // 传当前会话 id，Core 会保留它并轮换 token
+      sessionId: c.get("sessionId") ?? undefined,
     },
     ip: c.req.header("cf-connecting-ip") ?? undefined,
   });
@@ -124,5 +127,14 @@ accountRoutes.post("/account/password", async (c) => {
     );
   }
 
-  return c.json({ ok: true, redirect: "/admin" });
+  // Core 改密后轮换了当前会话的 token，必须写回 Cookie，
+  // 否则浏览器还拿着已失效的旧 token，跳转后立刻被踢回登录页。
+  const rotatedToken = result.data?.token;
+  if (rotatedToken) {
+    setSessionCookie(c, rotatedToken, TTL.session);
+  }
+
+  // 与其它端点保持一致：业务数据放在 data 里。
+  // 前端统一读 result.data，之前放顶层导致"改密成功却提示失败"。
+  return c.json({ ok: true, data: { redirect: "/admin" } });
 });
