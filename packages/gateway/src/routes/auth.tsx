@@ -69,12 +69,13 @@ authRoutes.post("/login", async (c) => {
   const next = isJson ? null : c.req.query("next");
   const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : null;
 
+  // 分角色落地：user 进入 /admin 会撞「无权限」，给 ta 自己的账户页。
   const redirect =
     data.status === SessionStatus.MfaPending
       ? "/mfa"
       : data.mustChangePassword
-        ? "/admin/account/password"
-        : (safeNext ?? "/admin");
+        ? "/account/password"
+        : (safeNext ?? (data.role === "user" ? "/account" : "/admin"));
 
   if (isJson) return c.json({ ok: true, redirect });
   return c.redirect(redirect, 303);

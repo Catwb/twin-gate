@@ -1,0 +1,190 @@
+name: deploy-quick
+
+# 轻量部署：只构建并部署，不复核业务逻辑、不动数据库。
+# 适合「只改了前端 / 页面 / Gateway 路由」的日常更新。
+#
+# 完整的 deploy.yml 保留给：首次部署、改了 Core、需要跑迁移的场景。
+#
+# 两者的取舍：
+#   deploy-quick  约 2-3 分钟，跑 verify 的快速子集 + 构建 + 部署
+#   deploy        约 6-8 分钟，全量门禁 + 建库 + 迁移 + 冒烟测试
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "部署目标"
+        required: true
+        default: gateway
+        type: choice
+        options: [gateway, core, both]
+      confirm:
+        description: '输入 DEPLOY 确认执行'
+        required: true
+        default: ""
+        type: string
+
+concurrency:
+  group: deploy-quick-sso
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.34.4"
+
+jobs:
+  check:
+    name: quick-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: 确认输入
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY" ]; then
+            echo "::error::请在 confirm 输入框填入 DEPLOY 以确认执行"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # 只跑 typecheck 与门禁：这两项加起来不到 30 秒，
+      # 但能挡住绝大多数低级错误。单测留给完整的 deploy 再跑。
+      - name: 类型检查
+        run: pnpm -r typecheck
+
+      - name: 架构门禁
+        run: pnpm check
+
+  deploy-gateway:
+    name: deploy-gateway
+    needs: check
+    if: inputs.target == 'gateway' || inputs.target == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: 构建
+        run: pnpm --filter @sso/gateway build
+
+      - name: 断言产物完整
+        run: |
+          cd packages/gateway
+          for f in dist/login.html dist/mfa.html dist/404.html dist/_headers \
+                   dist/assets/app.css dist/assets/app.js dist/assets/security.js \
+                   dist/assets/password.js; do
+            if [ ! -f "$f" ]; then
+              echo "::error::构建产物缺失: $f"
+              exit 1
+            fi
+          done
+
+      - name: 注入运行时配置
+        env:
+          ISSUER: ${{ vars.ISSUER }}
+          RP_ID: ${{ vars.RP_ID }}
+        run: |
+          set -euo pipefail
+          cd packages/gateway
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'wrangler.toml';
+          let text = fs.readFileSync(path, 'utf8');
+          const issuer = process.env.ISSUER;
+          if (issuer) text = text.replace(/^ISSUER = .*$/m, 'ISSUER = ' + JSON.stringify(issuer));
+          const rpId = process.env.RP_ID;
+          if (rpId) text = text.replace(/^RP_ID = .*$/m, 'RP_ID = ' + JSON.stringify(rpId));
+          fs.writeFileSync(path, text);
+          NODE
+
+      - name: 部署
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          cd packages/gateway
+          pnpm exec wrangler deploy
+
+  deploy-core:
+    name: deploy-core
+    needs: check
+    if: inputs.target == 'core' || inputs.target == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: 查询 D1 数据库
+        id: d1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          cd packages/core
+          DB_ID=$(pnpm exec wrangler d1 list --json 2>/dev/null | node -e "
+            let s='';
+            process.stdin.on('data',d=>s+=d).on('end',()=>{
+              try {
+                const list = JSON.parse(s || '[]');
+                const hit = list.find(d => d.name === 'sso-db');
+                process.stdout.write(hit ? (hit.uuid || hit.id || '') : '');
+              } catch { process.stdout.write(''); }
+            });
+          ")
+          if [ -z "$DB_ID" ]; then
+            echo "::error::未找到 sso-db，请先运行完整的 deploy workflow 建库"
+            exit 1
+          fi
+          echo "database_id=$DB_ID" >> "$GITHUB_OUTPUT"
+
+      - name: 注入运行时配置
+        env:
+          DB_ID: ${{ steps.d1.outputs.database_id }}
+          ISSUER: ${{ vars.ISSUER }}
+          RP_ID: ${{ vars.RP_ID }}
+        run: |
+          set -euo pipefail
+          cd packages/core
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'wrangler.toml';
+          let text = fs.readFileSync(path, 'utf8');
+          const dbId = process.env.DB_ID;
+          if (!dbId) { console.error('缺少 DB_ID'); process.exit(1); }
+          text = text.replace(/REPLACE_WITH_D1_DATABASE_ID/g, dbId);
+          const issuer = process.env.ISSUER;
+          if (issuer) text = text.replace(/^ISSUER = .*$/m, 'ISSUER = ' + JSON.stringify(issuer));
+          const rpId = process.env.RP_ID;
+          if (rpId) text = text.replace(/^RP_ID = .*$/m, 'RP_ID = ' + JSON.stringify(rpId));
+          fs.writeFileSync(path, text);
+          NODE
+
+      - name: 部署
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          cd packages/core
+          pnpm exec wrangler deploy

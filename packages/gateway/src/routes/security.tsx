@@ -31,7 +31,8 @@ securityRoutes.get("/security", async (c) => {
   const justEnabled = c.req.query("totp") === "on";
 
   return c.html(
-    <AdminLayout title="安全" current="/admin/security" scripts={["/assets/security.js"]}>
+    <AdminLayout title="安全" current="/account/security" role={caller.role}
+      scripts={["/assets/security.js"]}>
       {freshCodes ? (
         <div class="alert alert-info">
           <strong>恢复码（只显示这一次，请立即保存）</strong>

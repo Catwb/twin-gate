@@ -222,7 +222,7 @@ check("危险动作：重置/恢复/改密后的会话处理", () => {
 check("后台：超管门禁、审计不阻断、提示可见", () => {
   const gate = code("packages/gateway/src/middleware/mfaGate.ts");
   expect(gate.includes("Role.SuperAdmin"), "MFA 门禁必须区分超管");
-  expect(gate.includes("/admin/security"), "门禁必须放行绑定页，否则死循环");
+  expect(gate.includes("/account/security"), "门禁必须放行绑定页，否则死循环");
   expect(gate.includes("mfa_binding_required"), "门禁缺少拒绝码");
 
   const admin = code("packages/gateway/src/routes/admin.tsx");
@@ -239,6 +239,22 @@ check("后台：超管门禁、审计不阻断、提示可见", () => {
   // 恢复码必须有 UI 入口，否则恢复路径等于不存在
   const mfaPage = code("packages/gateway/src/pages/mfa.tsx");
   expect(mfaPage.includes('action="/auth/mfa/recovery"'), "MFA 页面缺少恢复码表单");
+
+  // 普通用户要有自己的落地页：user 进 /admin 会撞「无权限」
+  const auth = code("packages/gateway/src/routes/auth.tsx");
+  expect(auth.includes('role === "user"'), "登录后未按角色分流，user 会被送去 /admin");
+  const account = code("packages/gateway/src/routes/account.tsx");
+  expect(account.includes('accountRoutes.get("/"'), "缺少普通用户的账户首页");
+
+  // 管理操作不能只有只读表格：后端接口存在就必须有入口
+  const adminRoutesSrc = code("packages/gateway/src/routes/admin.tsx");
+  for (const route of ["/users/reset-mfa", "/users/set-status", "/invites/create"]) {
+    expect(adminRoutesSrc.includes(`adminRoutes.post("${route}"`), `缺少 ${route} 的提交路由`);
+  }
+
+  // 会话最后活动时间必须真的更新
+  const session = code("packages/gateway/src/middleware/session.ts");
+  expect(session.includes("/session/touch"), "requireAuth 未更新 lastUsedAt，活动会话页会显示错误时间");
 });
 
 // ============================================================ 9. Cron 与容量
@@ -361,8 +377,8 @@ check("种子超管：幂等、不强制改密", () => {
 // ============================================================ 15. 改密页成对
 check("改密页：GET 与 POST 成对存在", () => {
   const account = code("packages/gateway/src/routes/account.tsx");
-  expect(account.includes('accountRoutes.get("/account/password"'), "缺少改密页 GET");
-  expect(account.includes('accountRoutes.post("/account/password"'), "缺少改密提交 POST");
+  expect(account.includes('accountRoutes.get("/password"'), "缺少改密页 GET");
+  expect(account.includes('accountRoutes.post("/password"'), "缺少改密提交 POST");
   expect(account.includes("/user/change-password"), "POST 未调用 Core 的改密方法");
 });
 

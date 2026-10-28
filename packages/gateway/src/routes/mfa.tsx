@@ -110,7 +110,11 @@ mfaRoutes.post("/mfa", async (c) => {
   // MFA 通过：轮换 token 并升级为完整会话。
   setSessionCookie(c, result.data.token, TTL.session);
 
-  const redirect = result.data.mustChangePassword ? "/admin/account/password" : "/admin";
+  const redirect = result.data.mustChangePassword
+    ? "/account/password"
+    : result.data.role === "user"
+      ? "/account"
+      : "/admin";
   if (isJson) return c.json({ ok: true, redirect });
   return c.redirect(redirect, 303);
 });
@@ -174,7 +178,11 @@ mfaRoutes.post("/passkey/verify", async (c) => {
   if (!result.ok) return c.json({ ok: false, message: "Passkey 验证失败" }, 401);
 
   setSessionCookie(c, result.data.token, TTL.session);
-  const redirect = result.data.mustChangePassword ? "/admin/account/password" : "/admin";
+  const redirect = result.data.mustChangePassword
+    ? "/account/password"
+    : result.data.role === "user"
+      ? "/account"
+      : "/admin";
   return c.json({ ok: true, redirect });
 });
 

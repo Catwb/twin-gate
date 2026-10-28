@@ -1,22 +1,40 @@
 /** @jsxImportSource hono/jsx */
 import type { Child } from "hono/jsx";
+import type { Role } from "@sso/shared";
 import { Layout } from "./Layout";
 
-const NAV = [
-  { href: "/admin/users", label: "用户" },
-  { href: "/admin/invites", label: "邀请" },
-  { href: "/admin/apps", label: "应用与密钥" },
-  { href: "/admin/sessions", label: "活动会话" },
-  { href: "/admin/security", label: "安全" },
-  { href: "/admin/audit", label: "审计" },
+type NavItem = { href: string; label: string; adminOnly?: boolean };
+
+const NAV: NavItem[] = [
+  { href: "/admin/users", label: "用户", adminOnly: true },
+  { href: "/admin/invites", label: "邀请", adminOnly: true },
+  { href: "/admin/apps", label: "应用与密钥", adminOnly: true },
+  { href: "/admin/sessions", label: "活动会话", adminOnly: true },
+  { href: "/admin/audit", label: "审计", adminOnly: true },
+  // 账户相关页面在 /account 下，普通用户也能访问
+  { href: "/account", label: "我的账户" },
+  { href: "/account/security", label: "安全设置" },
 ];
 
-export function AdminLayout(props: { title: string; current: string; scripts?: string[]; children: Child }) {
+const ADMIN_ROLES: Role[] = ["admin", "super_admin"];
+
+export function AdminLayout(props: {
+  title: string;
+  current: string;
+  /** 当前用户角色。不传则视为管理员，兼容既有调用。 */
+  role?: Role | null;
+  scripts?: string[];
+  children: Child;
+}) {
+  const isAdmin = props.role == null || ADMIN_ROLES.includes(props.role);
+  // 普通用户不该看到管理菜单 —— 那些页面要求 Role.Admin，点了就是「无权限」。
+  const items = NAV.filter((item) => isAdmin || !item.adminOnly);
+
   return (
     <Layout title={props.title} variant="app" scripts={props.scripts}>
       <div class="admin-shell">
         <nav class="admin-nav">
-          {NAV.map((item) => (
+          {items.map((item) => (
             <a href={item.href} aria-current={item.href === props.current ? "page" : undefined}>
               {item.label}
             </a>

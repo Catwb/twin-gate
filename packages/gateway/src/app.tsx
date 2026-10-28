@@ -44,10 +44,12 @@ export function createApp() {
   // ---- 管理后台（整组受 requireAuth 保护）----
   app.route("/admin", adminRoutes);
   app.route("/admin", adminAppsRoutes);
-  app.route("/admin", securityRoutes);
-  app.route("/admin", securityApiRoutes);
-  // 改密页必须挂在 MFA 门禁之外，否则种子超管会陷入死循环
-  app.route("/admin", accountRoutes);
+  app.route("/account", securityRoutes);
+  app.route("/account", securityApiRoutes);
+  // 账户相关页面挂在 /account 下：
+  //   - user 角色天然可达（/admin 下多数页面要求 Role.Admin）
+  //   - 语义正确：这是账户功能，不是管理员功能
+  app.route("/account", accountRoutes);
 
   app.get("/", (c) => c.redirect("/admin", 302));
 

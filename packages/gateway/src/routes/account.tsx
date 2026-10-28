@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { TTL } from "@sso/shared";
 import { callCore } from "../core/callCore";
 import { requireAuth, setSessionCookie } from "../middleware/session";
+import { AdminLayout } from "../components/AdminLayout";
 import { Layout } from "../components/Layout";
 import type { AppContext } from "../types";
 
@@ -17,7 +18,78 @@ accountRoutes.use("*", requireAuth);
  * 种子超管 mustChangePassword=1，登录后会被重定向到这里，
  * 如果被门禁挡住就会形成死循环（要改密 → 要求先绑 MFA → 绑完又要改密）。
  */
-accountRoutes.get("/account/password", async (c) => {
+/**
+ * 账户首页：普通用户的落地页。
+ *
+ * 之前 user 角色登录后被送到 /admin，而 /admin/users 要求 Role.Admin，
+ * 直接撞「无权限」。这里给普通用户一个自己的落脚点。
+ */
+accountRoutes.get("/", async (c) => {
+  const caller = c.get("caller")!;
+
+  const status = await callCore<{
+    totp: boolean;
+    passkey: boolean;
+    recoveryCodesRemaining: number;
+    mustChangePassword: boolean;
+    role: string | null;
+  }>(c.env, {
+    method: "POST",
+    path: "/mfa/status",
+    payload: { userId: caller.userId },
+  });
+
+  const info = status.ok
+    ? status.data
+    : { totp: false, passkey: false, recoveryCodesRemaining: 0, mustChangePassword: false, role: null };
+
+  const hasMfa = info.totp || info.passkey;
+  const isAdmin = caller.role === "admin" || caller.role === "super_admin";
+
+  return c.html(
+    <AdminLayout title="我的账户" current="/account">
+      {info.mustChangePassword ? (
+        <p class="alert alert-error">
+          你的密码仍是初始密码，请尽快<a href="/account/password">修改</a>。
+        </p>
+      ) : null}
+
+      <h2 class="section-title">账户</h2>
+      <table class="table">
+        <tbody>
+          <tr>
+            <th>密码</th>
+            <td><a class="btn btn-secondary btn-sm" href="/account/password">修改密码</a></td>
+          </tr>
+          <tr>
+            <th>二次验证</th>
+            <td>
+              <span class="badge">{hasMfa ? "已启用" : "未启用"}</span>
+              <a class="btn btn-secondary btn-sm" href="/account/security">管理</a>
+            </td>
+          </tr>
+          <tr>
+            <th>恢复码</th>
+            <td>
+              <span class="badge">剩余 {info.recoveryCodesRemaining}</span>
+              {info.recoveryCodesRemaining <= 2 && hasMfa ? (
+                <span class="hint">建议重新生成</span>
+              ) : null}
+            </td>
+          </tr>
+          {isAdmin ? (
+            <tr>
+              <th>管理后台</th>
+              <td><a class="btn btn-secondary btn-sm" href="/admin">进入</a></td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </AdminLayout>,
+  );
+});
+
+accountRoutes.get("/password", async (c) => {
   const caller = c.get("caller")!;
   const status = await callCore<{ mustChangePassword: boolean }>(c.env, {
     method: "POST",
@@ -85,7 +157,7 @@ accountRoutes.get("/account/password", async (c) => {
  * 注意：这个端点在 MFA 门禁之外，因为它服务于"首次登录必须改密"流程，
  * 而此时用户可能还没绑定任何第二因子。
  */
-accountRoutes.post("/account/password", async (c) => {
+accountRoutes.post("/password", async (c) => {
   const caller = c.get("caller")!;
   const body = (await c.req.json().catch(() => null)) as {
     currentPassword?: string;

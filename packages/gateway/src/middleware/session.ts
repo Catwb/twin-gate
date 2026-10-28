@@ -68,6 +68,17 @@ export const requireAuth = createMiddleware<AppContext>(async (c, next) => {
   c.set("caller", { userId: data.userId!, role: data.role! } satisfies Caller);
   c.set("sessionId", data.sessionId!);
 
+  // 更新最后活动时间。/admin/sessions 展示的「最后活动」依赖这个字段，
+  // 之前从不更新，那一列永远等于会话创建时间。
+  // 不阻塞请求：失败也无所谓，只是个展示字段。
+  c.executionCtx.waitUntil(
+    callCore(c.env, {
+      method: "POST",
+      path: "/session/touch",
+      payload: { sessionId: data.sessionId! },
+    }).catch(() => undefined),
+  );
+
   await next();
 });
 

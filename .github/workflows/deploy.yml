@@ -121,7 +121,7 @@ jobs:
       - name: 断言构建产物齐全
         run: |
           cd packages/gateway
-          for f in dist/login.html dist/mfa.html dist/404.html dist/_headers dist/assets/app.css dist/assets/app.js dist/assets/security.js; do
+          for f in dist/login.html dist/mfa.html dist/404.html dist/_headers dist/assets/app.css dist/assets/app.js dist/assets/security.js dist/assets/password.js; do
             if [ ! -f "$f" ]; then
               echo "::error::构建产物缺失: $f"
               exit 1
