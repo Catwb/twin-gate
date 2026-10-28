@@ -21,6 +21,7 @@ import {
   revokeMfaStatements,
 } from "../services/recovery";
 import { buildAuthenticationOptionsForUser } from "../services/passkeyAuth";
+import { deriveRpId, normalizeOrigin } from "../lib/webauthn-config";
 import { uuid } from "../lib/crypto";
 
 type Variables = { db: ReturnType<typeof getDb> };
@@ -266,6 +267,32 @@ mfaRoutes.post("/mfa/verify-recovery", async (c) => {
 
 // ---------------------------------------------------------------- Passkey
 
+// ---------------------------------------------------------------- 诊断
+
+/**
+ * 暴露 WebAuthn 的生效配置，用于排查 Passkey 绑定失败。
+ * 只返回 origin 与 rpId —— 都是公开信息，不含任何 secret。
+ */
+mfaRoutes.post("/passkey/config", async (c) => {
+  const origin = normalizeOrigin(c.env.ISSUER ?? "");
+  const rpId = c.env.RP_ID?.trim() || deriveRpId(origin) || "localhost";
+  const configuredRaw = { issuer: c.env.ISSUER ?? null, rpIdRaw: c.env.RP_ID ?? null };
+
+  return c.json({
+    ok: true,
+    origin,
+    rpId,
+    configuredRaw,
+    hints: [
+      "浏览器地址栏的域名必须与 rpId 完全一致（或为其子域）",
+      "expectedOrigin 必须等于浏览器报告的 origin（含协议与端口，不带路径）",
+    ],
+  });
+});
+
+/**
+ * 生成 Passkey 注册选项，同时把预期挑战返回给前端。
+ */
 mfaRoutes.post("/passkey/register-options", async (c) => {
   const db = c.get("db");
   const body = await c.req.json().catch(() => null);
@@ -278,7 +305,7 @@ mfaRoutes.post("/passkey/register-options", async (c) => {
   const options = await buildRegistrationOptions(db, {
     userId: user.id,
     email: user.email,
-    rpId: c.env.RP_ID ?? "localhost",
+    rpId: c.env.RP_ID?.trim() || deriveRpId(normalizeOrigin(c.env.ISSUER ?? "")) || "localhost",
     rpName: c.env.ISSUER ?? "SSO",
   });
 
@@ -300,11 +327,14 @@ mfaRoutes.post("/passkey/register-verify", async (c) => {
     userId: caller.userId,
     response: parsed.data.response as never,
     expectedChallenge: parsed.data.challenge,
-    expectedOrigin: c.env.ISSUER ?? "",
-    rpId: c.env.RP_ID ?? "localhost",
+    expectedOrigin: normalizeOrigin(c.env.ISSUER ?? ""),
+    rpId: c.env.RP_ID?.trim() || deriveRpId(normalizeOrigin(c.env.ISSUER ?? "")) || "localhost",
   });
 
-  if (!result.ok) return c.json({ ok: false, code: result.reason }, 400);
+  if (!result.ok) {
+    // detail 只在服务端日志与本次响应里出现，方便定位 rpID / origin 不匹配。
+    return c.json({ ok: false, code: result.reason, detail: result.detail ?? null }, 400);
+  }
 
   await safeAudit(db, {
     action: "passkey_registered",
@@ -325,7 +355,7 @@ mfaRoutes.post("/passkey/login-options", async (c) => {
 
   const options = await buildAuthenticationOptionsForUser(db, {
     userId: parsed.data.userId ?? null,
-    rpId: c.env.RP_ID ?? "localhost",
+    rpId: c.env.RP_ID?.trim() || deriveRpId(normalizeOrigin(c.env.ISSUER ?? "")) || "localhost",
   });
 
   return c.json({ ok: true, options });
@@ -348,8 +378,8 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
   const result = await completeAuthentication(db, {
     response: parsed.data.response as never,
     expectedChallenge: parsed.data.challenge,
-    expectedOrigin: c.env.ISSUER ?? "",
-    rpId: c.env.RP_ID ?? "localhost",
+    expectedOrigin: normalizeOrigin(c.env.ISSUER ?? ""),
+    rpId: c.env.RP_ID?.trim() || deriveRpId(normalizeOrigin(c.env.ISSUER ?? "")) || "localhost",
   });
 
   if (!result.ok) {
@@ -358,7 +388,7 @@ mfaRoutes.post("/passkey/login-verify", async (c) => {
       ip: parsed.data.ip ?? null,
       meta: { method: "passkey", reason: result.reason },
     });
-    return c.json({ ok: false, code: result.reason }, 401);
+    return c.json({ ok: false, code: result.reason, detail: result.detail ?? null }, 401);
   }
 
   const user = await findUserById(db, result.userId);

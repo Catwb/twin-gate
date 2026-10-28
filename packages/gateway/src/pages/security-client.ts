@@ -10,6 +10,25 @@ function hint(text: string): void {
   setHint("totp-status", text);
 }
 
+/**
+ * 把 Core 的错误码翻译成可操作提示。
+ * 之前只显示"绑定失败"，排查时看不出是域名不匹配还是用户取消。
+ */
+function describePasskeyError(code?: string | null, fallback?: string): string {
+  switch (code) {
+    case "invalid_challenge":
+      return "挑战已过期或已被使用，请重新点击绑定";
+    case "verification_failed":
+      return "验证失败：请确认访问域名与 ISSUER 完全一致（Passkey 要求同域），然后重试";
+    case "not_found":
+      return "凭证不存在，请重新绑定";
+    case "counter_regression":
+      return "凭证计数器异常，可能已被克隆，请联系管理员";
+    default:
+      return fallback ?? "绑定失败";
+  }
+}
+
 // ---------------------------------------------------------------- Passkey 绑定
 
 async function registerPasskey(): Promise<void> {
@@ -86,7 +105,9 @@ async function registerPasskey(): Promise<void> {
         window.location.href = "/admin/security";
         return;
       }
-      hint(finish.message ?? "绑定失败");
+      // 把 Core 的错误码翻译成可操作的提示，
+      // 而不是笼统的"绑定失败"——这个问题排查过一次，代价很高。
+      hint(describePasskeyError(finish.code, finish.message));
     } catch {
       hint("绑定被取消");
     } finally {

@@ -798,6 +798,92 @@ pnpm exec wrangler d1 execute sso-db --remote \
 
 ---
 
+## 8.5 Passkey 绑定失败排查
+
+Passkey 对域名极其敏感，配错时的表现很不直观。按这个顺序查：
+
+### 先确认服务端认为的配置
+
+workflow 部署后，Core 有个诊断端点会告诉你生效值：
+
+```bash
+# 需要 X-Gateway-Token，本地或 CI 里都能跑
+curl -X POST https://<core>/internal/passkey/config \
+  -H 'x-gateway-token: <GATEWAY_TOKEN>' \
+  -H 'content-type: application/json' \
+  -d '{"caller":null,"payload":{}}'
+```
+
+返回：
+
+```json
+{
+  "ok": true,
+  "origin": "https://sso.furryawa.com",
+  "rpId": "sso.furryawa.com",
+  "configuredRaw": { "issuer": "...", "rpIdRaw": "..." }
+}
+```
+
+### 三条硬规则
+
+| 规则 | 违反时的现象 |
+|---|---|
+| 浏览器地址栏域名必须等于 `rpId`（或是其子域） | 浏览器直接报 `SecurityError`，**请求根本没发出** |
+| `expectedOrigin` 必须等于浏览器 origin（含协议与端口，不带路径） | 服务端返回 `verification_failed` |
+| 一个 Passkey 绑定在哪个 `rpId` 上就永远只在那个域可用 | 换域名后旧凭证全部失效 |
+
+### 常见原因
+
+**1. 在 workers.dev 域名上测试**
+
+```
+配置 rpId = sso.furryawa.com
+实际访问 https://twin-gate.xxx.workers.dev
+→ SecurityError，绑定必然失败
+```
+
+必须用绑定了 Custom Domain 的那个域名访问。
+
+**2. `ISSUER` 带了结尾斜杠**
+
+```toml
+ISSUER = "https://sso.furryawa.com/"   # 末尾多了 /
+```
+
+说明：代码里已做 `normalizeOrigin()` 规范化，会去掉斜杠与路径。
+但配置本身仍建议写规范，避免其它地方引用时出问题。
+
+**3. `RP_ID` 写了协议**
+
+```toml
+RP_ID = "https://sso.furryawa.com"   # 错，不能带协议
+RP_ID = "sso.furryawa.com"            # 对
+```
+
+**4. 设备上已有同一账号的旧 Passkey**
+
+浏览器会抛 `InvalidStateError`。到系统设置里删掉旧的，或换一台设备试。
+
+### 看服务端日志
+
+绑定失败时 Core 会打印真因：
+
+```
+[passkey] 注册验证失败: Unexpected RP ID hash in authenticator data
+```
+
+常见几类：
+
+| 日志关键词 | 含义 |
+|---|---|
+| `RP ID hash` | rpId 与浏览器实际域不符 |
+| `origin` | expectedOrigin 与浏览器 origin 不符 |
+| `challenge` | 挑战过期（默认 10 分钟）或已被使用 |
+| `User verification` | 设备未完成指纹/PIN 验证 |
+
+---
+
 ## 9. 事故处置
 
 ### 9.1 pepper 疑似泄露

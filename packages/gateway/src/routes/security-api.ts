@@ -40,7 +40,14 @@ securityApiRoutes.post("/security/passkey/verify", async (c) => {
     ip: c.req.header("cf-connecting-ip") ?? undefined,
   });
 
-  if (!result.ok) return c.json({ ok: false, message: "绑定失败" }, 400);
+  if (!result.ok) {
+    // 把 Core 的 error code 一并带出，前端能区分"域名不匹配"和"用户取消"
+    const coreErr = result as { code?: string; message?: string };
+    return c.json(
+      { ok: false, message: "绑定失败", code: coreErr.code ?? null },
+      400,
+    );
+  }
   return c.json({ ok: true });
 });
 

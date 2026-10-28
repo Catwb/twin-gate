@@ -6,6 +6,8 @@ export type JsonResult<T = unknown> = {
   ok: boolean;
   redirect?: string;
   message?: string;
+  /** 服务端错误码，用于给出可操作提示 */
+  code?: string | null;
   data?: T;
 };
 

@@ -125,7 +125,7 @@ export async function buildRegistrationOptions(
 
 export type VerifiedRegistration =
   | { ok: true; credentialId: string }
-  | { ok: false; reason: "invalid_challenge" | "verification_failed" };
+  | { ok: false; reason: "invalid_challenge" | "verification_failed"; detail?: string };
 
 export async function completeRegistration(
   db: Db,
@@ -149,8 +149,12 @@ export async function completeRegistration(
       expectedRPID: params.rpId,
       requireUserVerification: true,
     });
-  } catch {
-    return { ok: false, reason: "verification_failed" };
+  } catch (error) {
+    // 把原始错误带出去 —— 之前只返回 verification_failed，
+    // 线上排查时完全看不出是 rpID 不匹配、origin 不匹配还是 attestation 解析失败。
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[passkey] 注册验证失败:", detail);
+    return { ok: false, reason: "verification_failed", detail };
   }
 
   if (!verification.verified || !verification.registrationInfo) {
@@ -177,7 +181,11 @@ export async function completeRegistration(
 
 export type VerifiedAuthentication =
   | { ok: true; userId: string }
-  | { ok: false; reason: "not_found" | "invalid_challenge" | "verification_failed" | "counter_regression" };
+  | {
+      ok: false;
+      reason: "not_found" | "invalid_challenge" | "verification_failed" | "counter_regression";
+      detail?: string;
+    };
 
 export async function completeAuthentication(
   db: Db,
@@ -211,8 +219,10 @@ export async function completeAuthentication(
           : undefined,
       },
     });
-  } catch {
-    return { ok: false, reason: "verification_failed" };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[passkey] 认证验证失败:", detail);
+    return { ok: false, reason: "verification_failed", detail };
   }
 
   if (!verification.verified) return { ok: false, reason: "verification_failed" };

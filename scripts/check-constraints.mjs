@@ -401,6 +401,22 @@ check("超管种子脚本幂等且校验输入", () => {
   return "ok";
 });
 
+check("Passkey 的 origin/rpId 经过规范化", () => {
+  const mfa = read(join(ROOT, "packages/core/src/routes/mfa.ts"));
+
+  // 直接传 c.env.ISSUER 作为 expectedOrigin 会在带结尾斜杠时失配
+  if (/expectedOrigin:\s*c\.env\.ISSUER\s*\?\?/.test(mfa)) {
+    throw new Error("expectedOrigin 必须经 normalizeOrigin，不能直接传 ISSUER");
+  }
+  if (!mfa.includes("normalizeOrigin(c.env.ISSUER")) {
+    throw new Error("未使用 normalizeOrigin");
+  }
+  if (!mfa.includes("deriveRpId")) {
+    throw new Error("未在 rpId 缺失时从 origin 推导");
+  }
+  return "ok";
+});
+
 // ---- 输出 ----
 const failed = checks.filter((c) => !c.ok);
 for (const c of checks) {
