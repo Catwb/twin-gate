@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 # 构建产物：由 pnpm build 生成，不入库
 packages/gateway/public/assets/

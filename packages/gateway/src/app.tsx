@@ -6,6 +6,7 @@ import { oauthRoutes } from "./routes/oauth";
 import { mfaRoutes } from "./routes/mfa";
 import { securityRoutes } from "./routes/security";
 import { securityApiRoutes } from "./routes/security-api";
+import { accountRoutes } from "./routes/account";
 import { adminRoutes } from "./routes/admin";
 import { adminAppsRoutes } from "./routes/admin-apps";
 import { securityMiddleware } from "./middleware/security";
@@ -45,6 +46,8 @@ export function createApp() {
   app.route("/admin", adminAppsRoutes);
   app.route("/admin", securityRoutes);
   app.route("/admin", securityApiRoutes);
+  // 改密页必须挂在 MFA 门禁之外，否则种子超管会陷入死循环
+  app.route("/admin", accountRoutes);
 
   app.get("/", (c) => c.redirect("/admin", 302));
 

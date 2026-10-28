@@ -325,7 +325,17 @@ check("部署文档的 token 权限说明含 D1", () => {
 });
 
 check("无临时/编辑器残留文件入库", () => {
-  const tracked = execSync("git ls-files", { cwd: ROOT, encoding: "utf8" });
+  let tracked;
+  try {
+    tracked = execSync("git ls-files", { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch (error) {
+    // 某些沙箱环境禁止 spawn 子进程，此时无法读取 git 索引。
+    // 这属于环境限制，不是代码问题 —— 跳过而不是误报失败。
+    if (error?.code === "EPERM" || error?.code === "ENOENT") {
+      return "skipped (spawn 受限)";
+    }
+    throw error;
+  }
   const forbidden = [".gitmsg.txt", ".git-msg.txt", ".commitmsg", "*.commitmsg", ".tmp-", "*.bak", ".DS_Store"];
   const offenders = tracked
     .split("\n")

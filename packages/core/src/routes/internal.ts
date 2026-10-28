@@ -62,6 +62,12 @@ function requireAdmin(role: string | null): boolean {
 
 internalRoutes.get("/health", (c) => c.json({ ok: true }));
 
+/** 从 envelope 里取 payload，供内联 zod 校验使用。 */
+function parsedEnvelopePayload(body: unknown): unknown {
+  const env = envelopeSchema.safeParse(body);
+  return env.success ? env.data.payload : null;
+}
+
 internalRoutes.post("/auth/login", async (c) => {
   const db = c.get("db");
   const body = await c.req.json().catch(() => null);
@@ -257,6 +263,48 @@ internalRoutes.post("/user/create", async (c) => {
   return c.json({ ok: true, userId: id });
 });
 
+internalRoutes.post("/user/change-password", async (c) => {
+  const db = c.get("db");
+  const body = await c.req.json().catch(() => null);
+  const parsed = z
+    .object({
+      userId: z.string().min(1),
+      currentPassword: z.string().min(1).max(256),
+      newPassword: z.string().min(1).max(256),
+    })
+    .safeParse(parsedEnvelopePayload(body));
+  if (!parsed.success) return c.json({ ok: false, code: "bad_request" }, 400);
+
+  const policy = checkPasswordPolicy(parsed.data.newPassword);
+  if (!policy.ok) return c.json({ ok: false, code: "weak_password", message: policy.reason }, 400);
+
+  if (parsed.data.currentPassword === parsed.data.newPassword) {
+    return c.json({ ok: false, code: "same_password", message: "新密码不能与当前密码相同" }, 400);
+  }
+
+  const user = await findUserById(db, parsed.data.userId);
+  if (!user) return c.json({ ok: false, code: "unauthorized" }, 401);
+
+  const ok = await verifyPassword(c.env.SESSION_PEPPER, parsed.data.currentPassword, user.passwordHash);
+  if (!ok) return c.json({ ok: false, code: "invalid_credentials" }, 401);
+
+  const passwordHash = await makePasswordHash(c.env.SESSION_PEPPER, parsed.data.newPassword);
+  await db
+    .update((await import("../db/schema")).users)
+    .set({ passwordHash, mustChangePassword: 0 })
+    .where(eq((await import("../db/schema")).users.id, user.id));
+
+  // 改密后吊销其它会话（保留当前这条由 Gateway 侧决定）
+  await db.batch([...revokeAllStatements(db, { userId: user.id, reason: "password_changed" })]);
+
+  await safeAudit(db, {
+    action: "password_changed",
+    actorUserId: user.id,
+    ip: c.req.header("x-caller-ip") ?? null,
+  });
+
+  return c.json({ ok: true });
+});
 internalRoutes.post("/user/set-status", async (c) => {
   const db = c.get("db");
   const body = await c.req.json().catch(() => null);
